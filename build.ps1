@@ -1,0 +1,22 @@
+﻿# 编译两端程序到 dist 目录（只需要安装 Go，Mac 端在 Windows 上交叉编译并打包成 .app）
+$ErrorActionPreference = 'Stop'
+Set-Location $PSScriptRoot
+New-Item -ItemType Directory -Force dist | Out-Null
+$version = '1.2.0'
+
+go build -trimpath -ldflags "-H=windowsgui -s -w" -o dist\kvmswitch.exe ./cmd/kvmswitch-win
+if ($LASTEXITCODE -ne 0) { throw "Windows 端编译失败" }
+
+$env:GOOS = 'darwin'; $env:GOARCH = 'arm64'; $env:CGO_ENABLED = '0'
+try {
+    go build -trimpath -ldflags "-s -w" -o dist\kvmswitch-mac ./cmd/kvmswitch-mac
+    if ($LASTEXITCODE -ne 0) { throw "Mac 端编译失败" }
+} finally {
+    Remove-Item Env:GOOS, Env:GOARCH, Env:CGO_ENABLED
+}
+
+go run ./tools/pack dist\kvmswitch-mac dist\KVMSwitch-mac.zip $version
+if ($LASTEXITCODE -ne 0) { throw "Mac 应用打包失败" }
+Remove-Item dist\kvmswitch-mac
+
+Get-ChildItem dist | Select-Object Name, Length
