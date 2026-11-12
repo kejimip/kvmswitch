@@ -26,6 +26,7 @@ type fake struct {
 	controlled bool
 	awake      bool
 	canControl bool
+	heldCtrl   bool
 	keys       []uint16
 	moves      [][2]int32
 	buttons    int
@@ -57,6 +58,9 @@ func (f *fake) CanControl() bool {
 func (f *fake) SetControlled(on bool) {
 	defer f.lock()()
 	f.controlled = on
+	if !on {
+		f.heldCtrl = false
+	}
 }
 func (f *fake) ApplyTuning(c *Config) {
 	defer f.lock()()
@@ -65,6 +69,9 @@ func (f *fake) ApplyTuning(c *Config) {
 func (f *fake) InjectKey(vk uint16, flags byte) bool {
 	defer f.lock()()
 	f.keys = append(f.keys, vk)
+	if vk == 0xa2 {
+		f.heldCtrl = flags&proto.KeyFlagDown != 0
+	}
 	return f.pasteOn != 0 && vk == f.pasteOn && flags&proto.KeyFlagDown != 0
 }
 func (f *fake) InjectMove(dx, dy int32) {
@@ -373,8 +380,8 @@ func TestClipboardFollowsSwitch(t *testing.T) {
 	})
 }
 
-// 在 Windows 剪切文件 -> 切到 Mac -> 按粘贴键 -> Windows 源文件进回收站。
-func TestCutThenPasteRecycles(t *testing.T) {
+// 在 Windows 剪切文件 -> 切到 Mac -> 按粘贴键 -> Windows 保留源文件。
+func TestCutThenPasteRetainsSource(t *testing.T) {
 	r := newRig(t, true)
 	r.connected()
 	src := filepath.Join(t.TempDir(), "报告.txt")
@@ -408,19 +415,15 @@ func TestCutThenPasteRecycles(t *testing.T) {
 		}
 	})
 	r.win.PushInput(InputEvent{Typ: proto.MsgKey, A: 0x56, C: proto.KeyFlagDown})
-	r.wait("源文件进回收站", func() bool {
-		var ok bool
-		r.fw.get(func() { ok = len(r.fw.recycled) == 1 && r.fw.recycled[0] == src })
-		return ok
-	})
-	// 第二次粘贴不应重复触发
-	r.win.PushInput(InputEvent{Typ: proto.MsgKey, A: 0x56, C: proto.KeyFlagDown})
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(150 * time.Millisecond)
 	r.fw.get(func() {
-		if len(r.fw.recycled) != 1 {
-			t.Fatal("重复移入回收站")
+		if len(r.fw.recycled) != 0 {
+			t.Fatal("跨机剪切不应移走源文件")
 		}
 	})
+	if _, err := os.Stat(src); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // 在任意一端改设置，另一端自动跟上。
@@ -725,4 +728,110 @@ func TestDeferredPasteFocusAndClipboard(t *testing.T) {
 			})
 		})
 	}
+}
+
+func TestQueueControlReleaseUnderMotion(t *testing.T) {
+	q := newInputQueue()
+	q.push(InputEvent{Typ: proto.MsgKey, A: 0xa2, C: proto.KeyFlagDown})
+	for i := 0; i < 100000; i++ {
+		q.push(InputEvent{Typ: proto.MsgMouseMove, A: 1})
+	}
+	q.push(InputEvent{Typ: proto.MsgKey, A: 0xa2})
+	a, _ := q.pop()
+	b, _ := q.pop()
+	c, _ := q.pop()
+	if a.C != proto.KeyFlagDown || b.A != 100000 || c.Typ != proto.MsgKey || c.C != 0 {
+		t.Fatal(a, b, c)
+	}
+	for i := 0; i < queueSize+1; i++ {
+		q.push(InputEvent{Typ: proto.MsgMouseButton, C: 1})
+	}
+	reset, _ := q.pop()
+	if reset.Typ != proto.MsgInputReset {
+		t.Fatal("missing emergency release")
+	}
+}
+func TestMediaTraceEndToEnd(t *testing.T) {
+	r := newRig(t, true)
+	r.connected()
+	r.win.Hotkey(false)
+	r.active(ActivePeer, ActiveSelf)
+	r.win.StartMediaTest()
+	r.win.LocalMedia(0x41)
+	if r.win.MediaState().Key != "" {
+		t.Fatal("ordinary key recorded")
+	}
+	r.win.PushInput(InputEvent{Typ: proto.MsgKey, A: 0xaf, C: proto.KeyFlagDown})
+	r.wait("media ack", func() bool { s := r.win.MediaState(); return s.Key == "音量 +" && s.Sent && s.Received })
+}
+func TestRetryAfterCancel(t *testing.T) {
+	r := newRig(t, true)
+	r.connected()
+	r.fw.copyText("retry me")
+	r.win.Hotkey(false)
+	r.active(ActivePeer, ActiveSelf)
+	r.wait("offer", func() bool { return r.mac.pending.Load() != nil })
+	// Pause the source before it can read its clipboard. Cancel and retry across the real control channel.
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	r.fw.get(func() { r.fw.beforeRead = func() { once.Do(func() { close(entered); <-release }) } })
+	if !r.mac.RequestPaste() {
+		t.Fatal("request not started")
+	}
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		close(release)
+		t.Fatal("source not reading")
+	}
+	err := r.mac.TransferAction("cancel")
+	close(release)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := r.mac.TransferState(); s == nil || !s.Retry {
+		t.Fatal(s)
+	}
+	if err = r.mac.TransferAction("retry"); err != nil {
+		t.Fatal(err)
+	}
+	r.wait("retried", func() bool {
+		var ok bool
+		r.fm.get(func() { ok = len(r.fm.written) == 1 && string(r.fm.written[0].Data) == "retry me" && r.fm.pasted == 0 })
+		return ok
+	})
+}
+
+func TestMonitorBindingNoFallback(t *testing.T) {
+	ids := []string{"screen-A", "screen-B"}
+	if i, e := MonitorIndex(ids, "screen-B"); e != nil || i != 1 {
+		t.Fatal(i, e)
+	}
+	for _, b := range []string{"", "missing"} {
+		if _, e := MonitorIndex(ids, b); e == nil {
+			t.Fatal("ambiguous or missing selection accepted")
+		}
+	}
+	if _, e := MonitorIndex([]string{"B", "B"}, "B"); e == nil {
+		t.Fatal("duplicate accepted")
+	}
+	if i, e := MonitorIndex(ids[:1], ""); e != nil || i != 0 {
+		t.Fatal(i, e)
+	}
+}
+
+func TestControlReleasedAfterMotionBurst(t *testing.T) {
+	r := newRig(t, true)
+	r.connected()
+	r.win.Hotkey(false)
+	r.active(ActivePeer, ActiveSelf)
+	key := InputEvent{Typ: proto.MsgKey, A: 0xa2, C: proto.KeyFlagDown}
+	r.win.PushInput(key)
+	r.wait("Ctrl held", func() bool { var held bool; r.fm.get(func() { held = r.fm.heldCtrl }); return held })
+	for i := 0; i < 100000; i++ {
+		r.win.PushInput(InputEvent{Typ: proto.MsgMouseMove, A: 1})
+	}
+	key.C = 0
+	r.win.PushInput(key)
+	r.wait("Ctrl released", func() bool { var held bool; r.fm.get(func() { held = r.fm.heldCtrl }); return !held })
 }

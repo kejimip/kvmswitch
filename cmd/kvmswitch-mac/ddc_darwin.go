@@ -3,12 +3,12 @@ package main
 import (
 	"errors"
 	"fmt"
+	"kvmswitch/internal/core"
 	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
-	"unsafe"
 
 	"github.com/ebitengine/purego"
 	"github.com/ebitengine/purego/objc"
@@ -21,6 +21,7 @@ var (
 	ddcOnce    sync.Once
 	ddcLoadErr error
 
+	ioRegistryEntryGetPath          func(uint32, string, *byte) int32
 	ioRegistryGetRootEntry          func(port uint32) uint32
 	ioRegistryEntryCreateIterator   func(entry uint32, plane string, opts uint32, iter *uint32) int32
 	ioIteratorNext                  func(iter uint32) uint32
@@ -55,6 +56,7 @@ func loadDDC() error {
 			}
 			purego.RegisterFunc(fptr, addr)
 		}
+		bind(&ioRegistryEntryGetPath, "IORegistryEntryGetPath")
 		bind(&ioRegistryGetRootEntry, "IORegistryGetRootEntry")
 		bind(&ioRegistryEntryCreateIterator, "IORegistryEntryCreateIterator")
 		bind(&ioIteratorNext, "IOIteratorNext")
@@ -121,17 +123,13 @@ func ddcProbe(externalCmd string) string {
 	return fmt.Sprintf("找到 %d 个可以发送切换指令的显示器接口。\n是否真的生效，请用上面的“测试切换”确认。", n)
 }
 
-// ddcSetInput 把所有外接显示器切到指定输入口（VCP 0x60）。
-// 若配置了外部命令，则改为执行该命令（其中 {input} 会被替换为十进制取值）。
-func ddcSetInput(v uint16, externalCmd string) error {
-	if strings.TrimSpace(externalCmd) != "" {
-		cmd := strings.ReplaceAll(externalCmd, "{input}", strconv.Itoa(int(v)))
-		out, err := exec.Command("/bin/sh", "-c", cmd).CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("执行 %q 失败: %v %s", cmd, err, strings.TrimSpace(string(out)))
-		}
-		return nil
-	}
+// Select by IOService connector path, not enumeration order.
+type macDisplay struct {
+	path string
+	av   uintptr
+}
+
+func withDisplays(f func([]macDisplay) error) error {
 	if err := loadDDC(); err != nil {
 		return err
 	}
@@ -139,67 +137,100 @@ func ddcSetInput(v uint16, externalCmd string) error {
 	withPool(func() {
 		var iter uint32
 		root := ioRegistryGetRootEntry(0)
-		if kr := ioRegistryEntryCreateIterator(root, "IOService", 1 /* 递归 */, &iter); kr != 0 {
+		defer ioObjectRelease(root)
+		if kr := ioRegistryEntryCreateIterator(root, "IOService", 1, &iter); kr != 0 {
 			result = fmt.Errorf("遍历 IORegistry 失败 (%d)", kr)
 			return
 		}
 		defer ioObjectRelease(iter)
-
-		// DDC/CI “设置 VCP” 报文
-		pkt := []byte{0x84, 0x03, 0x60, byte(v >> 8), byte(v), 0}
-		sum := byte(0x6E ^ 0x51)
-		for _, b := range pkt[:5] {
-			sum ^= b
-		}
-		pkt[5] = sum
-
-		found, okCount := 0, 0
-		var lastErr int32
-		name := make([]byte, 128)
+		var all []macDisplay
 		for {
 			svc := ioIteratorNext(iter)
 			if svc == 0 {
 				break
 			}
-			for i := range name {
-				name[i] = 0
-			}
-			ioRegistryEntryGetName(svc, &name[0])
-			if cString(name) == "DCPAVServiceProxy" {
-				external := true
+			func() {
+				defer ioObjectRelease(svc)
+				var name [128]byte
+				ioRegistryEntryGetName(svc, &name[0])
+				if cString(name[:]) != "DCPAVServiceProxy" {
+					return
+				}
 				if loc := ioRegistryEntryCreateCFProperty(svc, uintptr(nsString("Location")), 0, 0); loc != 0 {
-					if objc.Send[bool](objc.ID(loc), sel("isKindOfClass:"), objc.GetClass("NSString")) {
-						external = goString(objc.ID(loc)) != "Embedded"
-					}
-					cfRelease(loc)
-				}
-				if external {
-					if av := ioAVServiceCreateWithService(0, svc); av != 0 {
-						found++
-						sent := false
-						for i := 0; i < 2; i++ {
-							time.Sleep(40 * time.Millisecond)
-							if kr := ioAVServiceWriteI2C(av, 0x37, 0x51, (*byte)(unsafe.Pointer(&pkt[0])), uint32(len(pkt))); kr == 0 {
-								sent = true
-							} else {
-								lastErr = kr
-							}
-						}
-						if sent {
-							okCount++
-						}
-						cfRelease(av)
+					defer cfRelease(loc)
+					if objc.Send[bool](objc.ID(loc), sel("isKindOfClass:"), objc.GetClass("NSString")) && goString(objc.ID(loc)) == "Embedded" {
+						return
 					}
 				}
+				var path [512]byte
+				if ioRegistryEntryGetPath(svc, "IOService", &path[0]) != 0 {
+					return
+				}
+				if av := ioAVServiceCreateWithService(0, svc); av != 0 {
+					all = append(all, macDisplay{cString(path[:]), av})
+				}
+			}()
+		}
+		defer func() {
+			for _, d := range all {
+				cfRelease(d.av)
 			}
-			ioObjectRelease(svc)
-		}
-		switch {
-		case found == 0:
-			result = errors.New("没有找到可发送 DDC 指令的外接显示器（请尝试换用 USB-C/雷雳口连接显示器）")
-		case okCount == 0:
-			result = fmt.Errorf("显示器未接受 DDC 指令 (0x%x)（请尝试换用 USB-C/雷雳口连接显示器）", uint32(lastErr))
-		}
+		}()
+		result = f(all)
 	})
 	return result
+}
+func (*macPlatform) MonitorChoices() []core.MonitorChoice {
+	var out []core.MonitorChoice
+	withDisplays(func(ds []macDisplay) error {
+		for _, d := range ds {
+			out = append(out, core.MonitorChoice{ID: d.path, Name: d.path})
+		}
+		return nil
+	})
+	return out
+}
+func ddcSetInput(v uint16, externalCmd, id string) error {
+	if strings.TrimSpace(externalCmd) != "" && id == "" {
+		// Custom commands cannot necessarily address a particular panel. Never invoke one on an ambiguous topology.
+		if err := withDisplays(func(ds []macDisplay) error {
+			if len(ds) > 1 {
+				return errors.New("多屏时请绑定共享屏，禁用未定向的外部命令")
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+		out, err := exec.Command("/bin/sh", "-c", strings.ReplaceAll(externalCmd, "{input}", strconv.Itoa(int(v)))).CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("切换失败：%w %s", err, out)
+		}
+		return nil
+	}
+	return withDisplays(func(ds []macDisplay) error {
+		ids := make([]string, len(ds))
+		for i, d := range ds {
+			ids[i] = d.path
+		}
+		index, err := core.MonitorIndex(ids, id)
+		if err != nil {
+			return err
+		}
+		av := ds[index].av
+		pkt := []byte{0x84, 3, 0x60, byte(v >> 8), byte(v), 0}
+		sum := byte(0x6e ^ 0x51)
+		for _, b := range pkt[:5] {
+			sum ^= b
+		}
+		pkt[5] = sum
+		var kr int32
+		for i := 0; i < 2; i++ {
+			time.Sleep(40 * time.Millisecond)
+			kr = ioAVServiceWriteI2C(av, 0x37, 0x51, &pkt[0], uint32(len(pkt)))
+			if kr == 0 {
+				return nil
+			}
+		}
+		return fmt.Errorf("显示器未接受 DDC 指令 (0x%x)", uint32(kr))
+	})
 }

@@ -33,7 +33,6 @@ type Platform interface {
 	ClipChange() uint64 // 每次剪贴板变化都会改变的计数
 	ReadClip() (xfer.Clip, bool)
 	WriteClip(kind string, data []byte, paths []string) (change uint64, err error)
-	Recycle(paths []string) error
 
 	// 交互
 	Confirm(msg string) bool // 弹窗询问，60 秒不答视为否
@@ -61,9 +60,10 @@ type State struct {
 
 // InputEvent 是一次采集到的键鼠事件，Typ 为 proto.MsgKey / MsgMouseMove / MsgMouseButton / MsgWheel。
 type InputEvent struct {
-	Typ  byte
-	A, B int32
-	C    byte
+	trace uint64
+	Typ   byte
+	A, B  int32
+	C     byte
 }
 
 // Keys 保存热键及“录制新热键”的状态，由输入线程无锁读取。

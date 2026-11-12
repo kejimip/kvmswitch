@@ -295,43 +295,6 @@ func pngToDIB(p []byte) ([]byte, error) {
 	return out, nil
 }
 
-type shFileOp struct {
-	Hwnd         uintptr
-	Func         uint32
-	From         *uint16
-	To           *uint16
-	Flags        uint16
-	Aborted      int32
-	NameMappings uintptr
-	Title        *uint16
-}
-
-// recycle 把文件移入回收站（可恢复）。
-func recycle(paths []string) error {
-	var list []uint16
-	for _, p := range paths {
-		u, err := windows.UTF16FromString(p)
-		if err != nil {
-			continue
-		}
-		list = append(list, u...)
-	}
-	if len(list) == 0 {
-		return nil
-	}
-	list = append(list, 0)
-	op := shFileOp{
-		Func:  3, // FO_DELETE
-		From:  &list[0],
-		Flags: 0x40 | 0x10 | 0x4 | 0x400, // ALLOWUNDO | NOCONFIRMATION | SILENT | NOERRORUI
-	}
-	r, _, _ := pSHFileOperationW.Call(uintptr(unsafe.Pointer(&op)))
-	if r != 0 {
-		return errors.New("移入回收站失败")
-	}
-	return nil
-}
-
 func (*winPlatform) HasClip() bool {
 	return hasFormat(cfHDrop) || hasFormat(cfUnicodeText) || hasFormat(cfPNG) || hasFormat(cfDIB)
 }

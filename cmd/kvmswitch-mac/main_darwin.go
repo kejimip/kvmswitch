@@ -101,7 +101,7 @@ func (p *macPlatform) InjectButton(b int, down bool)        { p.inj.button(b, do
 func (p *macPlatform) InjectWheel(dy, dx int32)             { p.inj.wheel(dy, dx) }
 
 func (p *macPlatform) SetMonitorInput(v uint16, cfg *core.Config) error {
-	return ddcSetInput(v, cfg.MacDDCCommand)
+	return ddcSetInput(v, cfg.MacDDCCommand, cfg.MonitorID)
 }
 
 func (p *macPlatform) ClipChange() uint64          { return uint64(pbChangeCount()) }
@@ -109,9 +109,6 @@ func (p *macPlatform) ReadClip() (xfer.Clip, bool) { return readPasteboard() }
 func (p *macPlatform) WriteClip(kind string, data []byte, paths []string) (uint64, error) {
 	n, err := writePasteboard(kind, data, paths)
 	return uint64(n), err
-}
-func (p *macPlatform) Recycle([]string) error {
-	return errors.New("Mac 上没有“剪切文件”，不会走到这里")
 }
 
 func (p *macPlatform) Confirm(msg string) bool {
@@ -308,7 +305,7 @@ func main() {
 			fmt.Println(err)
 			os.Exit(1)
 		}
-		if err := ddcSetInput(v, ""); err != nil {
+		if err := ddcSetInput(v, "", ""); err != nil {
 			fmt.Println("失败:", err)
 			os.Exit(1)
 		}

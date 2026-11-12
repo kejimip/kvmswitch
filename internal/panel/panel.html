@@ -175,6 +175,7 @@ pre{margin:0;padding:14px 18px;font:12.5px/1.6 Consolas,"Cascadia Mono",Menlo,mo
       </div>
       <div class="card">
         <h2>验证</h2>
+        <div class="row"><div class="lbl"><b>本机共享屏</b><span>仅检测到一台时可自动选择。多屏请在两端分别刷新、绑定；绑定失效不会改切其他屏。</span></div><div class="ctl"><select id="monitorBinding" aria-label="本机共享屏"></select><button class="btn" id="scanDisplays">刷新</button></div></div>
         <div class="row"><div class="lbl"><b>输入口识别向导</b><span>依次试切 HDMI / DP，每次约 6 秒后尝试恢复。若黑屏未恢复，用显示器实体键切回，再记录观察结果。Mac 端以当前配置的本机口作为恢复口。</span></div><button class="btn" id="wizStart">开始识别</button></div>
         <div id="wizBox" hidden><p id="wizText" aria-live="polite"></p><div id="wizChoices"></div></div>
         <div class="row"><div class="lbl"><b>测试切换</b><span id="testTxt">把显示器切到另一台设备的输入口，10 秒后尝试切回。若没有自动回来，请用显示器按键手动切回，属于常见情况：正常使用时由当时正在显示的那台设备负责换口。</span></div><div class="ctl"><button class="btn" id="testBtn">开始测试</button></div></div>
@@ -191,6 +192,7 @@ pre{margin:0;padding:14px 18px;font:12.5px/1.6 Consolas,"Cascadia Mono",Menlo,mo
     <!-- 键盘与鼠标 -->
     <section id="input">
       <h1>键盘与鼠标</h1>
+      <div class="card"><div class="row"><div class="lbl"><b>测试媒体键</b><span id="mediaStatus" aria-live="polite"></span></div><button id="testMedia" class="btn">监听 60 秒</button></div><div class="note">在插键盘的电脑开启测试，再用热键切到对端并转动旋钮。只显示最近一个标准媒体键，不记录普通按键。</div></div>
       <p class="sub">键盘鼠标插在哪台设备上都可以。修改后立即生效，并自动同步到另一台设备。</p>
       <div class="card">
         <h2>热键</h2>
@@ -216,13 +218,13 @@ pre{margin:0;padding:14px 18px;font:12.5px/1.6 Consolas,"Cascadia Mono",Menlo,mo
     <!-- 剪贴板 -->
     <section id="clip">
       <h1>剪贴板</h1>
-      <p class="sub">在一台设备上复制，切换后直接粘贴。按粘贴快捷键开始接收；焦点未变时自动粘贴。传输中继续操作、剪切文件或无法确认焦点时，请等就绪后再粘贴。右键菜单不触发首次接收。</p>
+      <p class="sub">在一台设备上复制，切换后直接粘贴。按粘贴快捷键开始接收；焦点未变时自动粘贴。传输中继续操作或无法确认焦点时，请等就绪后再粘贴。右键菜单不触发首次接收。</p>
       <div class="card">
         <div class="row"><div class="lbl"><b>同步剪贴板</b><span>文本、图片、文件和文件夹</span></div><div class="ctl"><label class="sw"><input type="checkbox" data-k="sync_clipboard"><span></span></label></div></div>
-        <div class="row"><div class="lbl"><b>接收进度</b><span id="transferStatus">空闲</span></div><progress id="transferBar" max="1" value="0"></progress></div>
+        <div class="row"><div class="lbl"><b>接收进度</b><span id="transferStatus">空闲</span></div><progress id="transferBar" max="1" value="0"></progress><button class="btn" id="cancelTransfer" disabled>取消</button><button class="btn" id="retryTransfer" disabled>重试</button></div>
         <div class="row"><div class="lbl"><b>大文件确认</b><span>超过这个大小时，先在接收的那台设备上弹窗询问；填 0 表示从不询问</span></div><div class="ctl"><input type="number" min="0" step="100" data-k="max_auto_file_mb"><span>MB</span></div></div>
         <div class="row"><div class="lbl"><b>收到的文件</b><span>从另一台设备复制来的文件先放在缓存目录，只保留最近 3 次</span></div><div class="ctl"><button class="btn" data-open="recv">打开文件夹</button></div></div>
-        <div class="note">文件剪切：在 Windows 上剪切、到 Mac 上按粘贴键（Command+V）后，Windows 上的源文件会移入回收站。用右键菜单粘贴时不会移动源文件。Mac 的访达没有“剪切文件”，所以反方向只有复制。</div>
+        <div class="note">跨机剪切按复制处理。即使已粘贴，源端文件也不会被自动移走。</div>
       </div>
     </section>
 
@@ -436,7 +438,11 @@ function renderPorts() {
 
 function render(s) {
   state = s;
-  const t=s.transfer;
+  const t=s.transfer,m=s.media||{};
+  $('#testMedia').disabled=!!m.Listening;
+  $('#mediaStatus').textContent=(m.Listening?'监听中 · ':'')+(m.Key?m.Key+' · '+(m.Sent?'已发送':'未发送')+' · '+(m.Received?'对端已收到':'未收到回执'):'尚未检测到媒体键');
+  $('#cancelTransfer').disabled=!t?.Cancel;$('#retryTransfer').disabled=!t?.Retry;
+  refreshBindings(s.config.monitor_id||'');
   $('#transferStatus').textContent=t ? t.Status+(t.Total>0?' · '+(t.Done/1048576).toFixed(1)+' / '+(t.Total/1048576).toFixed(1)+' MB':'') : '空闲';
   $('#transferBar').value=t&&t.Total>0?t.Done/t.Total:0;
   const st = s.state, on = st.connected;
@@ -519,6 +525,16 @@ $('#wizStart').onclick=()=>{
  }
  step()
 };
+let displayOptions=[],displaySig=null;
+function refreshBindings(id){const sig=JSON.stringify([id,displayOptions]);if(sig===displaySig)return;displaySig=sig;
+ const el=$('#monitorBinding');el.replaceChildren(new Option('自动（单屏）',''));
+ for(const d of displayOptions)el.add(new Option(d.Name,d.ID));
+ if(id&&!displayOptions.some(d=>d.ID===id))el.add(new Option('已绑定 · '+id,id));el.value=id;
+}
+$('#scanDisplays').onclick=async()=>{try{displayOptions=(await api('/api/monitor/list',{})).items||[];refreshBindings(cfg.monitor_id||'');if(!displayOptions.length)toast('没有可绑定的外接显示器')}catch(e){toast(e.message,true)}};
+$('#monitorBinding').onchange=e=>save({monitor_id:e.target.value});
+$('#testMedia').onclick=async()=>{try{await api('/api/media/test',{});await tick()}catch(e){toast(e.message,true)}};
+for(const [id,action] of [['cancelTransfer','cancel'],['retryTransfer','retry']])$('#'+id).onclick=async()=>{try{await api('/api/transfer/action',{Action:action});await tick()}catch(e){toast(e.message,true)}};
 // ---------- 显示器测试 ----------
 let testing = false;
 $('#testBtn').onclick = async () => {

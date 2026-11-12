@@ -81,14 +81,15 @@ func (s *Server) URL(tab string) string {
 }
 
 type stateJSON struct {
-	Transfer  *core.Transfer `json:"transfer,omitempty"`
-	Version   string         `json:"version"`
-	SelfOS    string         `json:"self_os"`
-	SelfName  string         `json:"self_name"`
-	Dialer    bool           `json:"dialer"` // 本机是主动发起连接的一端（可手动填写对方地址）
-	Autostart bool           `json:"autostart"`
-	State     core.State     `json:"state"`
-	Config    *core.Config   `json:"config"`
+	Media     core.MediaResult `json:"media"`
+	Transfer  *core.Transfer   `json:"transfer,omitempty"`
+	Version   string           `json:"version"`
+	SelfOS    string           `json:"self_os"`
+	SelfName  string           `json:"self_name"`
+	Dialer    bool             `json:"dialer"` // 本机是主动发起连接的一端（可手动填写对方地址）
+	Autostart bool             `json:"autostart"`
+	State     core.State       `json:"state"`
+	Config    *core.Config     `json:"config"`
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -132,7 +133,7 @@ func Start(c *core.Core, h Host, logs *LogRing, dialer bool) (*Server, error) {
 
 	api.HandleFunc("/api/state", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, stateJSON{
-			Transfer: c.TransferState(), Version: core.Version, SelfOS: c.P.OS(), SelfName: c.P.Hostname(), Dialer: dialer,
+			Media: c.MediaState(), Transfer: c.TransferState(), Version: core.Version, SelfOS: c.P.OS(), SelfName: c.P.Hostname(), Dialer: dialer,
 			Autostart: h.Autostart(), State: c.State(), Config: c.Config(),
 		})
 	})
@@ -210,6 +211,26 @@ func Start(c *core.Core, h Host, logs *LogRing, dialer bool) (*Server, error) {
 		default:
 			writeJSON(w, 200, map[string]any{"hotkey": core.FormatHotkey(hk)})
 		}
+	})
+	post("/api/media/test", func(w http.ResponseWriter, r *http.Request) { c.StartMediaTest(); writeJSON(w, 200, ok) })
+	post("/api/transfer/action", func(w http.ResponseWriter, r *http.Request) {
+		var b struct{ Action string }
+		if readBody(r, &b) != nil {
+			fail(w, 400, "缺少操作")
+			return
+		}
+		if err := c.TransferAction(b.Action); err != nil {
+			fail(w, 409, err.Error())
+			return
+		}
+		writeJSON(w, 200, ok)
+	})
+	post("/api/monitor/list", func(w http.ResponseWriter, r *http.Request) {
+		var items []core.MonitorChoice
+		if p, ok := c.P.(interface{ MonitorChoices() []core.MonitorChoice }); ok {
+			items = p.MonitorChoices()
+		}
+		writeJSON(w, 200, map[string]any{"items": items})
 	})
 	post("/api/monitor/probe", func(w http.ResponseWriter, r *http.Request) {
 		var b struct{ Port string }

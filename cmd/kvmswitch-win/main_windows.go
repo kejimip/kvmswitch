@@ -53,14 +53,15 @@ func (p *winPlatform) InjectKey(vk uint16, flags byte) bool {
 	p.inj.key(vk, flags)
 	return false // Mac 的访达没有“剪切文件”，所以 Windows 端不需要识别粘贴
 }
-func (p *winPlatform) InjectMove(dx, dy int32)                        { p.inj.move(dx, dy) }
-func (p *winPlatform) InjectButton(b int, down bool)                  { p.inj.button(b, down) }
-func (p *winPlatform) InjectWheel(dy, dx int32)                       { p.inj.wheel(dy, dx) }
-func (p *winPlatform) SetMonitorInput(v uint16, _ *core.Config) error { return ddcSetInput(v) }
+func (p *winPlatform) InjectMove(dx, dy int32)       { p.inj.move(dx, dy) }
+func (p *winPlatform) InjectButton(b int, down bool) { p.inj.button(b, down) }
+func (p *winPlatform) InjectWheel(dy, dx int32)      { p.inj.wheel(dy, dx) }
+func (p *winPlatform) SetMonitorInput(v uint16, cfg *core.Config) error {
+	return ddcSetInput(v, cfg.MonitorID)
+}
 
-func (p *winPlatform) ClipChange() uint64           { return uint64(clipboardSeq()) }
-func (p *winPlatform) ReadClip() (xfer.Clip, bool)  { return readClipboard() }
-func (p *winPlatform) Recycle(paths []string) error { return recycle(paths) }
+func (p *winPlatform) ClipChange() uint64          { return uint64(clipboardSeq()) }
+func (p *winPlatform) ReadClip() (xfer.Clip, bool) { return readClipboard() }
 func (p *winPlatform) WriteClip(kind string, data []byte, paths []string) (uint64, error) {
 	seq, err := writeClipboard(kind, data, paths)
 	return uint64(seq), err

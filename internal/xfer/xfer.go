@@ -2,6 +2,7 @@
 package xfer
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -61,9 +62,9 @@ type Session struct {
 	OnClip   func(h Header, data []byte, topPaths []string) // 一次接收完成
 	Logf     func(format string, a ...any)
 	Progress func(id uint64, done, total int64)
-	Failed   func(id uint64)
+	Failed   func(id uint64, err error)
 	sendMu   sync.Mutex
-	replies  chan bool
+	replies  chan answer
 	initOnce sync.Once
 
 	// 接收状态
@@ -77,7 +78,7 @@ type Session struct {
 }
 
 func (s *Session) init() {
-	s.initOnce.Do(func() { s.replies = make(chan bool, 1) })
+	s.initOnce.Do(func() { s.replies = make(chan answer, 4) })
 }
 
 func (s *Session) logf(f string, a ...any) {
@@ -86,19 +87,30 @@ func (s *Session) logf(f string, a ...any) {
 	}
 }
 
+type answer struct {
+	id uint64
+	ok bool
+}
 type srcFile struct {
+	info os.FileInfo
 	abs  string
 	size int64
 }
 
 // buildList 展开顶层路径，生成条目列表。
-func buildList(paths []string) (entries []FileEntry, srcs []srcFile, total int64, err error) {
+func buildList(ctx context.Context, paths []string) (entries []FileEntry, srcs []srcFile, total int64, err error) {
+	return walkList(ctx, paths, filepath.WalkDir)
+}
+func walkList(ctx context.Context, paths []string, walk func(string, fs.WalkDirFunc) error) (entries []FileEntry, srcs []srcFile, total int64, err error) {
 	seen := map[string]bool{}
 	for _, top := range paths {
+		if err = ctx.Err(); err != nil {
+			return
+		}
 		top = filepath.Clean(top)
 		name := filepath.Base(top)
 		if seen[strings.ToLower(name)] {
-			continue
+			return nil, nil, 0, fmt.Errorf("存在同名顶层项目：%s", name)
 		}
 		seen[strings.ToLower(name)] = true
 		st, e := os.Lstat(top)
@@ -107,16 +119,19 @@ func buildList(paths []string) (entries []FileEntry, srcs []srcFile, total int64
 		}
 		if st.Mode().IsRegular() {
 			entries = append(entries, FileEntry{Path: name, Size: st.Size()})
-			srcs = append(srcs, srcFile{top, st.Size()})
+			srcs = append(srcs, srcFile{st, top, st.Size()})
 			total += st.Size()
 			continue
 		}
 		if !st.IsDir() {
-			continue
+			return nil, nil, 0, fmt.Errorf("不支持该文件类型：%s", top)
 		}
-		e = filepath.WalkDir(top, func(p string, d fs.DirEntry, werr error) error {
+		e = walk(top, func(p string, d fs.DirEntry, werr error) error {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			if werr != nil {
-				return nil // 跳过无权限的条目
+				return werr
 			}
 			rel, _ := filepath.Rel(top, p)
 			wire := name
@@ -128,14 +143,14 @@ func buildList(paths []string) (entries []FileEntry, srcs []srcFile, total int64
 				return nil
 			}
 			if !d.Type().IsRegular() {
-				return nil
+				return fmt.Errorf("不支持该文件类型：%s", p)
 			}
 			info, ierr := d.Info()
 			if ierr != nil {
-				return nil
+				return ierr
 			}
 			entries = append(entries, FileEntry{Path: wire, Size: info.Size()})
-			srcs = append(srcs, srcFile{p, info.Size()})
+			srcs = append(srcs, srcFile{info, p, info.Size()})
 			total += info.Size()
 			return nil
 		})
@@ -148,6 +163,9 @@ func buildList(paths []string) (entries []FileEntry, srcs []srcFile, total int64
 
 // Send 发送一份剪贴板内容；阻塞直到完成。
 func (s *Session) Send(id uint64, clip Clip) error {
+	return s.SendContext(context.Background(), id, clip)
+}
+func (s *Session) SendContext(ctx context.Context, id uint64, clip Clip) (result error) {
 	s.init()
 	s.sendMu.Lock()
 	defer s.sendMu.Unlock()
@@ -156,7 +174,7 @@ func (s *Session) Send(id uint64, clip Clip) error {
 	var srcs []srcFile
 	if clip.Kind == KindFiles {
 		var err error
-		h.Files, srcs, h.Total, err = buildList(clip.Paths)
+		h.Files, srcs, h.Total, err = buildList(ctx, clip.Paths)
 		if err != nil {
 			return err
 		}
@@ -174,6 +192,9 @@ func (s *Session) Send(id uint64, clip Clip) error {
 			return errors.New("剪贴板内容过大")
 		}
 	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 	hb, _ := json.Marshal(h)
 	if len(hb) > maxHeaderLen {
 		return fmt.Errorf("文件数量过多（%d 项），未同步", len(h.Files))
@@ -185,19 +206,37 @@ func (s *Session) Send(id uint64, clip Clip) error {
 	if err := s.C.Write(proto.MsgClipBegin, hb); err != nil {
 		return err
 	}
-	if h.Confirm {
-		select {
-		case ok := <-s.replies:
-			if !ok {
-				return errors.New("对端取消了大文件传输")
-			}
-		case <-time.After(90 * time.Second):
+	defer func() {
+		if result != nil {
 			s.C.Write(proto.MsgClipAbort, nil)
-			return errors.New("等待对端确认超时")
+		}
+	}()
+	if h.Confirm {
+		timeout := time.NewTimer(90 * time.Second)
+		defer timeout.Stop()
+	wait:
+		for {
+			select {
+			case a := <-s.replies:
+				if a.id != id {
+					continue
+				}
+				if !a.ok {
+					return errors.New("对端拒绝接收大文件")
+				}
+				break wait
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-timeout.C:
+				return errors.New("等待对端确认超时")
+			}
 		}
 	}
 	if clip.Kind != KindFiles {
 		for off := 0; off < len(clip.Data); off += proto.ChunkSize {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			end := min(off+proto.ChunkSize, len(clip.Data))
 			if err := s.C.Write(proto.MsgClipChunk, clip.Data[off:end]); err != nil {
 				return err
@@ -207,25 +246,40 @@ func (s *Session) Send(id uint64, clip Clip) error {
 	}
 	buf := make([]byte, proto.ChunkSize)
 	for _, sf := range srcs {
-		if err := s.sendFile(sf, buf); err != nil {
-			s.C.Write(proto.MsgClipAbort, nil)
+		if err := s.sendFile(ctx, sf, buf); err != nil {
 			return err
 		}
 	}
 	return s.C.Write(proto.MsgClipEnd, nil)
 }
 
-func (s *Session) sendFile(sf srcFile, buf []byte) error {
-	if sf.size == 0 {
-		return nil
+func (s *Session) sendFile(ctx context.Context, sf srcFile, buf []byte) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
 	}
 	f, err := os.Open(sf.abs)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
+	check := func() error {
+		st, e := os.Lstat(sf.abs)
+		if e != nil {
+			return e
+		}
+		if !os.SameFile(sf.info, st) || st.Size() != sf.size || !st.ModTime().Equal(sf.info.ModTime()) {
+			return fmt.Errorf("源文件已变化：%s", sf.abs)
+		}
+		return nil
+	}
+	if err := check(); err != nil {
+		return err
+	}
 	remain := sf.size
 	for remain > 0 {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		n := int64(len(buf))
 		if remain < n {
 			n = remain
@@ -238,7 +292,7 @@ func (s *Session) sendFile(sf srcFile, buf []byte) error {
 		}
 		remain -= n
 	}
-	return nil
+	return check()
 }
 
 // Run 是读循环，连接断开时返回。
@@ -252,8 +306,11 @@ func (s *Session) Run() error {
 		}
 		switch t {
 		case proto.MsgClipAccept, proto.MsgClipReject:
+			if len(p) != 8 {
+				continue
+			}
 			select {
-			case s.replies <- t == proto.MsgClipAccept:
+			case s.replies <- answer{binary.BigEndian.Uint64(p), t == proto.MsgClipAccept}:
 			default:
 			}
 		case proto.MsgClipBegin:
@@ -264,7 +321,7 @@ func (s *Session) Run() error {
 			}
 			if err := s.begin(&h); err != nil {
 				if s.Failed != nil {
-					s.Failed(h.ID)
+					s.Failed(h.ID, err)
 				}
 				s.logf("接收剪贴板失败: %v", err)
 				s.abortRecv()
@@ -274,6 +331,9 @@ func (s *Session) Run() error {
 				continue
 			}
 			if err := s.chunk(p); err != nil {
+				if s.Failed != nil {
+					s.Failed(s.rh.ID, err)
+				}
 				s.logf("接收剪贴板失败: %v", err)
 				s.abortRecv()
 			}
@@ -288,6 +348,29 @@ func (s *Session) Run() error {
 	}
 }
 
+func (s *Session) confirmWhileWanted(h Header) bool {
+	if s.Confirm == nil {
+		return false
+	}
+	if s.Wanted == nil {
+		return s.Confirm(h)
+	}
+	ans := make(chan bool, 1)
+	go func() { ans <- s.Confirm(h) }()
+	t := time.NewTicker(100 * time.Millisecond)
+	defer t.Stop()
+	for {
+		select {
+		case ok := <-ans:
+			return ok && s.Wanted(h.ID)
+		case <-t.C:
+			if !s.Wanted(h.ID) {
+				return false
+			}
+		}
+	}
+}
+
 func (s *Session) begin(h *Header) error {
 	if s.Wanted != nil && !s.Wanted(h.ID) {
 		if h.Confirm {
@@ -298,12 +381,12 @@ func (s *Session) begin(h *Header) error {
 		return errors.New("已失效的粘贴请求")
 	}
 	if h.Confirm {
-		ok := s.Confirm != nil && s.Confirm(*h)
+		ok := s.confirmWhileWanted(*h)
 		id := make([]byte, 8)
 		binary.BigEndian.PutUint64(id, h.ID)
 		if !ok {
 			if s.Failed != nil {
-				s.Failed(h.ID)
+				s.Failed(h.ID, errors.New("已拒绝大文件传输"))
 			}
 			s.C.Write(proto.MsgClipReject, id)
 			return nil
@@ -348,7 +431,9 @@ func (s *Session) begin(h *Header) error {
 func (s *Session) advance() error {
 	for s.rremain == 0 {
 		if s.rfile != nil {
-			s.rfile.Close()
+			if err := s.rfile.Close(); err != nil {
+				return err
+			}
 			s.rfile = nil
 		}
 		s.ridx++
@@ -414,6 +499,9 @@ func (s *Session) chunk(p []byte) error {
 func (s *Session) finish() {
 	h := s.rh
 	if s.rgot != h.Total {
+		if s.Failed != nil {
+			s.Failed(h.ID, errors.New("接收数据不完整"))
+		}
 		s.logf("接收不完整：%d / %d 字节", s.rgot, h.Total)
 		s.abortRecv()
 		return
@@ -444,9 +532,7 @@ func (s *Session) finish() {
 }
 
 func (s *Session) abortRecv() {
-	if s.rh != nil && s.Failed != nil {
-		s.Failed(s.rh.ID)
-	}
+
 	if s.rfile != nil {
 		s.rfile.Close()
 		s.rfile = nil

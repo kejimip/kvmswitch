@@ -63,7 +63,6 @@ var (
 
 	pShellNotifyIconW = shell32.NewProc("Shell_NotifyIconW")
 	pDragQueryFileW   = shell32.NewProc("DragQueryFileW")
-	pSHFileOperationW = shell32.NewProc("SHFileOperationW")
 	pShellExecuteW    = shell32.NewProc("ShellExecuteW")
 
 	pGetNumberOfPhysicalMonitors = dxva2.NewProc("GetNumberOfPhysicalMonitorsFromHMONITOR")

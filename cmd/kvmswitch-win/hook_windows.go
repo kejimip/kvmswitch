@@ -113,6 +113,9 @@ func kbdProc(nCode, wParam, lParam uintptr) uintptr {
 				physMods.Store(m)
 			}
 			if !up {
+				if !forward.Load() {
+					theCore.LocalMedia(uint16(vk))
+				}
 				theCore.Interacted()
 				if !forward.Load() && vk == 0x56 && collapseMods(physMods.Load()) == core.ModCtrl && theCore.RequestPaste() {
 					swallowed[vk] = true

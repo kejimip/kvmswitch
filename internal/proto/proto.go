@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	Magic   = "KVMS3"
+	Magic   = "KVMS4"
 	TCPPort = 47812
 	UDPPort = 47813
 
@@ -43,15 +43,15 @@ const (
 	MsgPong
 
 	// 控制通道（双向，两端对等）
-	MsgConfig        // JSON：共享设置，两端以修改时间较新的为准
-	MsgInfo          // JSON Info：设备名称、系统、是否可被控制
-	MsgActive        // JSON Active：宣布键鼠现在归谁
-	MsgDDCResult     // JSON DDCResult：本端尝试切换显示器的结果
-	MsgKey           // [vk u16][scan u16][flags u8]，键码统一为 Windows 虚拟键码
-	MsgMouseMove     // [dx i32][dy i32]
-	MsgMouseButton   // [button u8][down u8]
-	MsgWheel         // [dy i32][dx i32]，单位为 WHEEL_DELTA(120)
-	MsgPasteDetected // [clip id u64]
+	MsgConfig      // JSON：共享设置，两端以修改时间较新的为准
+	MsgInfo        // JSON Info：设备名称、系统、是否可被控制
+	MsgActive      // JSON Active：宣布键鼠现在归谁
+	MsgDDCResult   // JSON DDCResult：本端尝试切换显示器的结果
+	MsgKey         // [vk u16][scan u16][flags u8]，键码统一为 Windows 虚拟键码
+	MsgMouseMove   // [dx i32][dy i32]
+	MsgMouseButton // [button u8][down u8]
+	MsgWheel       // [dy i32][dx i32]，单位为 WHEEL_DELTA(120)
+	_              // reserved: legacy paste notifications never authorize source deletion
 
 	// 数据通道（双向）
 	MsgClipBegin  // JSON ClipHeader
@@ -63,6 +63,11 @@ const (
 	MsgClipOffer
 	MsgClipFetch
 	MsgClipUnavailable
+	MsgInputReset
+	MsgMediaAck
+	MsgClipCancel
+	MsgClipRetry
+	MsgClipError
 )
 
 const (
@@ -218,7 +223,12 @@ func (c *Conn) Write(typ byte, payload []byte) error {
 	out = c.wr.Seal(out, nonce(c.wn), plain, nil)
 	c.wn++
 	binary.BigEndian.PutUint32(out[:4], uint32(len(out)-4))
+	// Bound stalled writes: after a partial frame the connection cannot be reused.
+	c.c.SetWriteDeadline(time.Now().Add(8 * time.Second))
 	_, err := c.c.Write(out)
+	if err != nil {
+		c.c.Close()
+	}
 	return err
 }
 

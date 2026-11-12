@@ -85,6 +85,5 @@ func TestStructSizes(t *testing.T) {
 	check("NOTIFYICONDATAW", unsafe.Sizeof(notifyIconData{}), 976)
 	check("WNDCLASSEXW", unsafe.Sizeof(wndClassEx{}), 80)
 	check("MSG", unsafe.Sizeof(winMsg{}), 48)
-	check("SHFILEOPSTRUCTW", unsafe.Sizeof(shFileOp{}), 56)
 	check("PHYSICAL_MONITOR", unsafe.Sizeof(physMonitor{}), 264)
 }

@@ -170,15 +170,18 @@ func (t *tap) callback(proxy uintptr, typ uint32, ev uintptr, info uintptr) uint
 
 	switch typ {
 	case 14: // NSSystemDefined / NX_SUBTYPE_AUX_CONTROL_BUTTONS
-		if !fwd {
-			return ev
-		}
 		e := cls("NSEvent").Send(sel("eventWithCGEvent:"), ev)
 		if e == 0 || e.Send(sel("subtype")) != 8 {
 			return ev
 		}
 		vk, down, ok := decodeMedia(uint32(e.Send(sel("data1"))))
 		if !ok {
+			return ev
+		}
+		if !fwd {
+			if down {
+				t.c.LocalMedia(vk)
+			}
 			return ev
 		}
 		f := byte(proto.KeyFlagExtended)
@@ -217,7 +220,7 @@ func (t *tap) callback(proxy uintptr, typ uint32, ev uintptr, info uintptr) uint
 						t.swallowed[code] = true
 						return 0
 					}
-					t.c.LocalPaste() // 本机键盘上的粘贴：用于完成“剪切”
+					// 已就绪的剪贴板交给目标应用正常粘贴。
 				}
 			}
 		} else if t.swallowed[code] {

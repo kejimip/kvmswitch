@@ -1,6 +1,10 @@
 package xfer
 
 import (
+	"context"
+	"io/fs"
+	"sync"
+
 	"bytes"
 	"crypto/rand"
 	"encoding/json"
@@ -271,5 +275,77 @@ func TestCleanOld(t *testing.T) {
 	ents, _ := os.ReadDir(d)
 	if len(ents) != 3 || ents[0].Name() != "1000000000003-3" {
 		t.Fatalf("清理结果不对: %v", ents)
+	}
+}
+
+func TestUnreadableTreeFailsClosed(t *testing.T) {
+	root := t.TempDir()
+	_, _, _, err := walkList(context.Background(), []string{root}, func(path string, f fs.WalkDirFunc) error {
+		return f(filepath.Join(path, "unreadable"), nil, fs.ErrPermission)
+	})
+	if err == nil {
+		t.Fatal("unreadable entry silently omitted")
+	}
+}
+func TestChangedFileRefused(t *testing.T) {
+	root := t.TempDir()
+	p := filepath.Join(root, "changed")
+	os.WriteFile(p, []byte("a"), 0600)
+	_, files, _, err := buildList(context.Background(), []string{p})
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(p, []byte("ab"), 0600)
+	if err = (&Session{}).sendFile(context.Background(), files[0], make([]byte, 8)); err == nil {
+		t.Fatal("changed source accepted")
+	}
+}
+
+func TestCancelCleansPartialDirectory(t *testing.T) {
+	send, recv, err := pair(t, "KEYKEYKEYKEYKEYKEYKE", "KEYKEYKEYKEYKEYKEYKE", proto.ChanData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer send.Close()
+	defer recv.Close()
+	root := t.TempDir()
+	path := filepath.Join(t.TempDir(), "large")
+	f, e := os.Create(path)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = f.Truncate(32 << 20); e != nil {
+		t.Fatal(e)
+	}
+	f.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	finished := make(chan struct{})
+	var once sync.Once
+	s := &Session{C: recv, Dir: root, Progress: func(_ uint64, n, total int64) {
+		if n < total {
+			once.Do(cancel)
+		}
+	}, OnClip: func(h Header, _ []byte, _ []string) {
+		if h.ID == 2 {
+			close(finished)
+		}
+	}}
+	go s.Run()
+	tx := &Session{C: send}
+	if err = tx.SendContext(ctx, 1, Clip{Kind: KindFiles, Paths: []string{path}}); err == nil {
+		t.Fatal("expected cancellation")
+	}
+	if err = tx.Send(2, Clip{Kind: KindText, Data: []byte("barrier")}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-finished:
+	case <-time.After(2 * time.Second):
+		t.Fatal("connection not reusable")
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("partial files survived: %v %v", entries, err)
 	}
 }

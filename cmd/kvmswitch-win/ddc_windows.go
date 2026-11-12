@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"kvmswitch/internal/core"
 	"strings"
 	"sync"
 	"unsafe"
@@ -27,7 +28,47 @@ var (
 )
 
 // enumPhysicalMonitors 需在持有 ddcMu 时调用。
-func enumPhysicalMonitors() []physMonitor {
+type displayHandle struct {
+	physMonitor
+	id string
+}
+
+func devicePath(h uintptr) string {
+	var m struct {
+		Size  uint32
+		Rects [8]int32
+		Flags uint32
+		Name  [32]uint16
+	}
+	m.Size = uint32(unsafe.Sizeof(m))
+	if r, _, _ := user32.NewProc("GetMonitorInfoW").Call(h, uintptr(unsafe.Pointer(&m))); r == 0 {
+		return ""
+	}
+	var d struct {
+		Size    uint32
+		Name    [32]uint16
+		Desc    [128]uint16
+		Flags   uint32
+		ID, Key [128]uint16
+	}
+	// An HMONITOR with multiple active children (clone mode) is ambiguous.
+	id := ""
+	for i := uintptr(0); ; i++ {
+		d.Size = uint32(unsafe.Sizeof(d))
+		r, _, _ := user32.NewProc("EnumDisplayDevicesW").Call(uintptr(unsafe.Pointer(&m.Name[0])), i, uintptr(unsafe.Pointer(&d)), 1)
+		if r == 0 {
+			break
+		}
+		if d.Flags&1 != 0 {
+			if id != "" {
+				return ""
+			}
+			id = windows.UTF16ToString(d.ID[:])
+		}
+	}
+	return id
+}
+func enumPhysicalMonitors() []displayHandle {
 	// NewCallback 创建的回调无法释放，所以只创建一次
 	enumOnce.Do(func() {
 		enumCB = windows.NewCallback(func(h, hdc, rect, data uintptr) uintptr {
@@ -37,7 +78,7 @@ func enumPhysicalMonitors() []physMonitor {
 	})
 	hmons = hmons[:0]
 	pEnumDisplayMonitors.Call(0, 0, enumCB, 0)
-	var out []physMonitor
+	var out []displayHandle
 	for _, h := range hmons {
 		var n uint32
 		if r, _, _ := pGetNumberOfPhysicalMonitors.Call(h, uintptr(unsafe.Pointer(&n))); r == 0 || n == 0 {
@@ -47,12 +88,18 @@ func enumPhysicalMonitors() []physMonitor {
 		if r, _, _ := pGetPhysicalMonitors.Call(h, uintptr(n), uintptr(unsafe.Pointer(&arr[0]))); r == 0 {
 			continue
 		}
-		out = append(out, arr...)
+		id := ""
+		if len(arr) == 1 {
+			id = devicePath(h)
+		}
+		for _, p := range arr {
+			out = append(out, displayHandle{p, id})
+		}
 	}
 	return out
 }
 
-func destroyMonitors(ms []physMonitor) {
+func destroyMonitors(ms []displayHandle) {
 	for i := range ms {
 		pDestroyPhysicalMonitors.Call(1, uintptr(unsafe.Pointer(&ms[i])))
 	}
@@ -64,32 +111,46 @@ func getVCP(h uintptr, code byte) (cur, max uint32, ok bool) {
 }
 
 // ddcSetInput 把所有支持 DDC 输入源切换的显示器切到指定输入口。
-func ddcSetInput(v uint16) error {
+func selectDisplay(ms []displayHandle, id string) (displayHandle, error) {
+	var candidates []displayHandle
+	var ids []string
+	for _, m := range ms {
+		if _, _, ok := getVCP(m.Handle, vcpInput); ok {
+			candidates = append(candidates, m)
+			ids = append(ids, m.id)
+		}
+	}
+	i, err := core.MonitorIndex(ids, id)
+	if err != nil {
+		return displayHandle{}, err
+	}
+	return candidates[i], nil
+}
+func (*winPlatform) MonitorChoices() []core.MonitorChoice {
 	ddcMu.Lock()
 	defer ddcMu.Unlock()
 	ms := enumPhysicalMonitors()
 	defer destroyMonitors(ms)
-	if len(ms) == 0 {
-		return errors.New("没有找到显示器")
-	}
-	okCount := 0
-	var lastErr error
+	var out []core.MonitorChoice
 	for _, m := range ms {
-		if _, _, ok := getVCP(m.Handle, vcpInput); !ok {
-			continue // 笔记本内屏、虚拟显示器等不支持 DDC
-		}
-		r, _, err := pSetVCPFeature.Call(m.Handle, vcpInput, uintptr(v))
-		if r != 0 {
-			okCount++
-		} else {
-			lastErr = err
+		if _, _, ok := getVCP(m.Handle, vcpInput); ok && m.id != "" {
+			out = append(out, core.MonitorChoice{ID: m.id, Name: windows.UTF16ToString(m.Desc[:]) + " · " + m.id})
 		}
 	}
-	if okCount == 0 {
-		if lastErr != nil {
-			return fmt.Errorf("显示器拒绝了切换指令: %v", lastErr)
-		}
-		return errors.New("没有支持 DDC/CI 输入源切换的显示器（请确认显示器菜单里的 DDC/CI 已开启）")
+	return out
+}
+func ddcSetInput(v uint16, id string) error {
+	ddcMu.Lock()
+	defer ddcMu.Unlock()
+	ms := enumPhysicalMonitors()
+	defer destroyMonitors(ms)
+	m, err := selectDisplay(ms, id)
+	if err != nil {
+		return err
+	}
+	r, _, err := pSetVCPFeature.Call(m.Handle, vcpInput, uintptr(v))
+	if r == 0 {
+		return fmt.Errorf("显示器拒绝切换: %w", err)
 	}
 	return nil
 }
@@ -129,21 +190,18 @@ func ddcReport() string {
 	return sb.String()
 }
 
-func (*winPlatform) CurrentInput() (uint16, error) {
+func (*winPlatform) CurrentInput(id string) (uint16, error) {
 	ddcMu.Lock()
 	defer ddcMu.Unlock()
 	ms := enumPhysicalMonitors()
 	defer destroyMonitors(ms)
-	var found int
-	var val uint32
-	for _, m := range ms {
-		if v, _, ok := getVCP(m.Handle, vcpInput); ok {
-			found++
-			val = v
-		}
+	m, err := selectDisplay(ms, id)
+	if err != nil {
+		return 0, err
 	}
-	if found != 1 || val == 0 || val > 0xffff {
-		return 0, errors.New("未能唯一确定当前显示器和输入源，请使用手动设置")
+	v, _, ok := getVCP(m.Handle, vcpInput)
+	if !ok || v == 0 || v > 65535 {
+		return 0, errors.New("无法读取当前输入源")
 	}
-	return uint16(val), nil
+	return uint16(v), nil
 }

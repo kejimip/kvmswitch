@@ -14,14 +14,35 @@ import (
 	"time"
 )
 
-const Version = "1.3.0"
+const Version = "1.3.1"
 
 // Config 是一台设备上的全部配置。除 PairingKey、Port、PeerHost 外，其余为“共享设置”，
 // 在任意一端修改后会自动同步到另一端。
 const schemaVersion = 2
 
+type MonitorChoice struct{ ID, Name string }
+
+// No index fallback: a disconnected or ambiguous selection must never redirect a DDC write.
+func MonitorIndex(ids []string, bound string) (int, error) {
+	index := -1
+	for i, id := range ids {
+		if bound != "" && id != bound {
+			continue
+		}
+		if index >= 0 {
+			return -1, fmt.Errorf("存在多个候选显示器，请在本机绑定共享屏")
+		}
+		index = i
+	}
+	if index < 0 {
+		return -1, fmt.Errorf("未找到共享屏，请检查连接并刷新绑定")
+	}
+	return index, nil
+}
+
 type Config struct {
-	Schema     int    `json:"schema"` // 配置文件格式版本
+	MonitorID  string `json:"monitor_id"` // Local hardware path; never synchronized.
+	Schema     int    `json:"schema"`     // 配置文件格式版本
 	PairingKey string `json:"pairing_key"`
 	Port       int    `json:"port"`
 	PeerHost   string `json:"peer_host,omitempty"` // 可选：手动指定对方 IP（仅主动发起连接的一端使用）
