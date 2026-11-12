@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	Magic   = "KVMS2"
+	Magic   = "KVMS3"
 	TCPPort = 47812
 	UDPPort = 47813
 
@@ -60,6 +60,9 @@ const (
 	MsgClipAbort  // 空
 	MsgClipAccept // [id u64]
 	MsgClipReject // [id u64]
+	MsgClipOffer
+	MsgClipFetch
+	MsgClipUnavailable
 )
 
 const (

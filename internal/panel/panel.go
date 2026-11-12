@@ -81,13 +81,14 @@ func (s *Server) URL(tab string) string {
 }
 
 type stateJSON struct {
-	Version   string       `json:"version"`
-	SelfOS    string       `json:"self_os"`
-	SelfName  string       `json:"self_name"`
-	Dialer    bool         `json:"dialer"` // 本机是主动发起连接的一端（可手动填写对方地址）
-	Autostart bool         `json:"autostart"`
-	State     core.State   `json:"state"`
-	Config    *core.Config `json:"config"`
+	Transfer  *core.Transfer `json:"transfer,omitempty"`
+	Version   string         `json:"version"`
+	SelfOS    string         `json:"self_os"`
+	SelfName  string         `json:"self_name"`
+	Dialer    bool           `json:"dialer"` // 本机是主动发起连接的一端（可手动填写对方地址）
+	Autostart bool           `json:"autostart"`
+	State     core.State     `json:"state"`
+	Config    *core.Config   `json:"config"`
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -131,7 +132,7 @@ func Start(c *core.Core, h Host, logs *LogRing, dialer bool) (*Server, error) {
 
 	api.HandleFunc("/api/state", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, stateJSON{
-			Version: core.Version, SelfOS: c.P.OS(), SelfName: c.P.Hostname(), Dialer: dialer,
+			Transfer: c.TransferState(), Version: core.Version, SelfOS: c.P.OS(), SelfName: c.P.Hostname(), Dialer: dialer,
 			Autostart: h.Autostart(), State: c.State(), Config: c.Config(),
 		})
 	})
@@ -209,6 +210,18 @@ func Start(c *core.Core, h Host, logs *LogRing, dialer bool) (*Server, error) {
 		default:
 			writeJSON(w, 200, map[string]any{"hotkey": core.FormatHotkey(hk)})
 		}
+	})
+	post("/api/monitor/probe", func(w http.ResponseWriter, r *http.Request) {
+		var b struct{ Port string }
+		if readBody(r, &b) != nil {
+			fail(w, 400, "缺少输入口")
+			return
+		}
+		if err := c.ProbePort(b.Port); err != nil {
+			fail(w, 400, err.Error())
+			return
+		}
+		writeJSON(w, 200, ok)
 	})
 	post("/api/monitor/test", func(w http.ResponseWriter, r *http.Request) {
 		if !s.testing.CompareAndSwap(false, true) {

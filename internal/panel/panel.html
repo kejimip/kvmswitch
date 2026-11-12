@@ -157,7 +157,7 @@ pre{margin:0;padding:14px 18px;font:12.5px/1.6 Consolas,"Cascadia Mono",Menlo,mo
         <div class="row"><div class="lbl"><b>两台设备的连接</b><span id="ckConnTxt"></span></div><div class="ctl"><button class="link" data-goto="pair" id="ckConnLink">去连接</button><span class="st" id="ckConn"></span></div></div>
         <div class="row"><div class="lbl"><b>Mac 辅助功能权限</b><span>Mac 需要这项权限才能识别热键和接受键鼠</span></div><div class="ctl"><span class="st" id="ckAx"></span></div></div>
         <div class="row"><div class="lbl"><b>显示器随切换</b><span id="ckMonTxt"></span></div><div class="ctl"><button class="link" data-goto="display">设置</button><span class="st" id="ckMon"></span></div></div>
-        <div class="row"><div class="lbl"><b>剪贴板同步</b><span>文本、图片、文件在切换时带到另一台设备</span></div><div class="ctl"><button class="link" data-goto="clip">设置</button><span class="st" id="ckClip"></span></div></div>
+        <div class="row"><div class="lbl"><b>剪贴板同步</b><span>切换只通知对端，按粘贴快捷键时才传输</span></div><div class="ctl"><button class="link" data-goto="clip">设置</button><span class="st" id="ckClip"></span></div></div>
       </div>
       <div class="card">
         <div class="row keys"><div class="lbl"><b>屏幕切走后回不来？</b><span>在哪台设备的键盘上按紧急热键，键鼠和显示器就回到哪台设备</span></div><div class="ctl"><kbd id="emHint">Ctrl+Alt+Shift+F12</kbd></div></div>
@@ -175,6 +175,8 @@ pre{margin:0;padding:14px 18px;font:12.5px/1.6 Consolas,"Cascadia Mono",Menlo,mo
       </div>
       <div class="card">
         <h2>验证</h2>
+        <div class="row"><div class="lbl"><b>输入口识别向导</b><span>依次试切 HDMI / DP，每次约 6 秒后尝试恢复。若黑屏未恢复，用显示器实体键切回，再记录观察结果。Mac 端以当前配置的本机口作为恢复口。</span></div><button class="btn" id="wizStart">开始识别</button></div>
+        <div id="wizBox" hidden><p id="wizText" aria-live="polite"></p><div id="wizChoices"></div></div>
         <div class="row"><div class="lbl"><b>测试切换</b><span id="testTxt">把显示器切到另一台设备的输入口，10 秒后尝试切回。若没有自动回来，请用显示器按键手动切回，属于常见情况：正常使用时由当时正在显示的那台设备负责换口。</span></div><div class="ctl"><button class="btn" id="testBtn">开始测试</button></div></div>
         <div class="row"><div class="lbl"><b>显示器信息</b><span>查看本机能否向显示器发送切换指令</span></div><div class="ctl"><button class="btn" id="infoBtn">读取</button></div></div>
         <pre id="infoOut" hidden></pre>
@@ -214,9 +216,10 @@ pre{margin:0;padding:14px 18px;font:12.5px/1.6 Consolas,"Cascadia Mono",Menlo,mo
     <!-- 剪贴板 -->
     <section id="clip">
       <h1>剪贴板</h1>
-      <p class="sub">在一台设备上复制，切换后直接粘贴。同步发生在切换的那一刻。</p>
+      <p class="sub">在一台设备上复制，切换后直接粘贴。按粘贴快捷键开始接收；焦点未变时自动粘贴。传输中继续操作、剪切文件或无法确认焦点时，请等就绪后再粘贴。右键菜单不触发首次接收。</p>
       <div class="card">
         <div class="row"><div class="lbl"><b>同步剪贴板</b><span>文本、图片、文件和文件夹</span></div><div class="ctl"><label class="sw"><input type="checkbox" data-k="sync_clipboard"><span></span></label></div></div>
+        <div class="row"><div class="lbl"><b>接收进度</b><span id="transferStatus">空闲</span></div><progress id="transferBar" max="1" value="0"></progress></div>
         <div class="row"><div class="lbl"><b>大文件确认</b><span>超过这个大小时，先在接收的那台设备上弹窗询问；填 0 表示从不询问</span></div><div class="ctl"><input type="number" min="0" step="100" data-k="max_auto_file_mb"><span>MB</span></div></div>
         <div class="row"><div class="lbl"><b>收到的文件</b><span>从另一台设备复制来的文件先放在缓存目录，只保留最近 3 次</span></div><div class="ctl"><button class="btn" data-open="recv">打开文件夹</button></div></div>
         <div class="note">文件剪切：在 Windows 上剪切、到 Mac 上按粘贴键（Command+V）后，Windows 上的源文件会移入回收站。用右键菜单粘贴时不会移动源文件。Mac 的访达没有“剪切文件”，所以反方向只有复制。</div>
@@ -433,6 +436,9 @@ function renderPorts() {
 
 function render(s) {
   state = s;
+  const t=s.transfer;
+  $('#transferStatus').textContent=t ? t.Status+(t.Total>0?' · '+(t.Done/1048576).toFixed(1)+' / '+(t.Total/1048576).toFixed(1)+' MB':'') : '空闲';
+  $('#transferBar').value=t&&t.Total>0?t.Done/t.Total:0;
   const st = s.state, on = st.connected;
   const peerOS = st.peer_os || (s.self_os === 'mac' ? 'windows' : 'mac');
   const peer = st.peer_name || OSNAME[peerOS];
@@ -490,6 +496,29 @@ $('#goBtn').onclick = async () => {
   try { await api('/api/toggle', {}); setTimeout(tick, 150); } catch (e) { toast(e.message, true); }
 };
 
+// 每次由用户发起试切，显示器恢复后才询问；两端都认出才允许保存。
+$('#wizStart').onclick=()=>{
+ let index=0, found={}, ports=Object.keys(PORTS),busy=false;
+ const box=$('#wizBox'),text=$('#wizText'),buttons=$('#wizChoices'),start=$('#wizStart');
+ box.hidden=false;start.disabled=true;
+ function end(){box.hidden=true;start.disabled=false;buttons.replaceChildren()}
+ function choice(name,fn){const b=document.createElement('button');b.className='btn';b.textContent=name;b.onclick=fn;buttons.append(b)}
+ function step(){buttons.replaceChildren();
+  if(found.windows && found.mac){text.textContent='Windows：'+PORTS[found.windows]+'，Mac：'+PORTS[found.mac];
+    choice('确认并保存',async()=>{try{const r=await api('/api/config',{windows_input:found.windows,mac_input:found.mac});fill(r.config);end();toast('已保存接口')}catch(e){toast(e.message,true)}})
+  }else if(index===ports.length){text.textContent='未识别出两个不同的输入口，没有更改设置。'}
+  else {const port=ports[index];text.textContent='下一项：'+PORTS[port];
+    choice('试切 '+PORTS[port],async()=>{if(busy)return;busy=true;buttons.replaceChildren();text.textContent='请观察画面，约 6 秒后尝试切回…';
+      let err='';try{await api('/api/monitor/probe',{port})}catch(e){err=e.message}busy=false;
+      text.textContent=(err?err+'。 ':'')+'试切 '+PORTS[port]+' 时看到了哪台设备？';
+      for(const [k,n] of [['windows','Windows'],['mac','Mac'],['','无信号 / 跳过']])choice(n,()=>{if(k)found[k]=port;index++;step()});
+      choice('取消',end)
+    })
+  }
+  choice('取消',end)
+ }
+ step()
+};
 // ---------- 显示器测试 ----------
 let testing = false;
 $('#testBtn').onclick = async () => {

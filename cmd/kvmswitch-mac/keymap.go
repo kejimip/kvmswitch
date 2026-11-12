@@ -187,3 +187,20 @@ func vkModBit(vk uint16) uint32 {
 	}
 	return 0
 }
+
+// NX_KEYTYPE ↔ Windows 媒体 VK；这些不是普通的 macOS 键码。
+var mediaKeys = map[uint16]uint16{0xAF: 0, 0xAE: 1, 0xAD: 7, 0xB3: 16, 0xB0: 17, 0xB1: 18}
+
+func decodeMedia(data uint32) (uint16, bool, bool) {
+	nx := uint16(data >> 16)
+	phase := byte(data >> 8)
+	if phase != 10 && phase != 11 {
+		return 0, false, false
+	}
+	for vk, n := range mediaKeys {
+		if nx == n {
+			return vk, phase == 10, true
+		}
+	}
+	return 0, false, false
+}

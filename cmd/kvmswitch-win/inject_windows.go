@@ -69,6 +69,8 @@ var buttonFlags = [5][3]uint32{
 }
 
 type injector struct {
+	swallowPaste bool
+	fetch        func() bool
 	mu           sync.Mutex
 	active       bool
 	held         map[uint16]bool // 值为是否扩展键
@@ -96,6 +98,7 @@ func (in *injector) setActive(on bool) {
 	if on == in.active {
 		return
 	}
+	in.swallowPaste = false
 	in.active = on
 	if on {
 		sendMouse(0, 0, 0, mouseeventfMove) // 唤醒可能已熄灭的屏幕
@@ -127,6 +130,16 @@ func (in *injector) key(vk uint16, flags byte) {
 	}
 	down := flags&proto.KeyFlagDown != 0
 	ext := flags&proto.KeyFlagExtended != 0
+	if vk == 0x56 && in.swallowPaste {
+		if !down {
+			in.swallowPaste = false
+		}
+		return
+	}
+	if down && vk == 0x56 && (hasKey(in.held, 0xA2) || hasKey(in.held, 0xA3) || hasKey(in.held, 0x11)) && !hasKey(in.held, 0xA0) && !hasKey(in.held, 0xA1) && !hasKey(in.held, 0xA4) && !hasKey(in.held, 0xA5) && in.fetch != nil && in.fetch() {
+		in.swallowPaste = true
+		return
+	}
 	sendKey(vk, scanOf(vk), !down, ext)
 	if down {
 		in.held[vk] = ext
@@ -187,3 +200,5 @@ func (in *injector) wheel(dy, dx int32) {
 		sendMouse(0, 0, uint32(int32(v)), mouseeventfHWheel)
 	}
 }
+
+func hasKey(m map[uint16]bool, v uint16) bool { _, ok := m[v]; return ok }

@@ -99,7 +99,7 @@ func (t *tap) start() {
 	cb := purego.NewCallback(t.callback)
 	var mask uint64
 	for _, typ := range []uint{evLeftDown, evLeftUp, evRightDown, evRightUp, evMoved, evLeftDragged, evRightDragged,
-		evKeyDown, evKeyUp, evFlagsChanged, evScrollWheel, evOtherDown, evOtherUp, evOtherDragged} {
+		14, evKeyDown, evKeyUp, evFlagsChanged, evScrollWheel, evOtherDown, evOtherUp, evOtherDragged} {
 		mask |= 1 << typ
 	}
 	try := func() bool {
@@ -161,10 +161,32 @@ func (t *tap) callback(proxy uintptr, typ uint32, ev uintptr, info uintptr) uint
 	if cgEventGetIntegerValueField(ev, fieldUserData) == eventTag {
 		return ev // 我们自己注入的事件
 	}
+	switch typ {
+	case evKeyDown, evLeftDown, evRightDown, evOtherDown, evScrollWheel:
+		t.c.Interacted()
+	}
 	fwd := t.forward.Load()
 	mods := *t.mods.Load()
 
 	switch typ {
+	case 14: // NSSystemDefined / NX_SUBTYPE_AUX_CONTROL_BUTTONS
+		if !fwd {
+			return ev
+		}
+		e := cls("NSEvent").Send(sel("eventWithCGEvent:"), ev)
+		if e == 0 || e.Send(sel("subtype")) != 8 {
+			return ev
+		}
+		vk, down, ok := decodeMedia(uint32(e.Send(sel("data1"))))
+		if !ok {
+			return ev
+		}
+		f := byte(proto.KeyFlagExtended)
+		if down {
+			f |= proto.KeyFlagDown
+		}
+		t.push(core.InputEvent{Typ: proto.MsgKey, A: int32(vk), C: f})
+		return 0
 	case evKeyDown, evKeyUp:
 		code := uint16(cgEventGetIntegerValueField(ev, fieldKeycode))
 		vk, ext, ok := unmapKey(code, mods)
@@ -191,6 +213,10 @@ func (t *tap) callback(proxy uintptr, typ uint32, ev uintptr, info uintptr) uint
 			if !fwd && !repeat && code == kcV {
 				f := cgEventGetFlags(ev)
 				if f&flagCommand != 0 && f&(flagControl|flagShift) == 0 {
+					if t.c.RequestPaste() {
+						t.swallowed[code] = true
+						return 0
+					}
 					t.c.LocalPaste() // 本机键盘上的粘贴：用于完成“剪切”
 				}
 			}

@@ -53,12 +53,15 @@ type Clip struct {
 
 // Session 封装一条数据通道连接，负责双向收发。
 type Session struct {
+	Wanted   func(id uint64) bool // nil for standalone transfers; paired sessions require a current paste request
 	C        *proto.Conn
 	Dir      string                                         // 接收文件的缓存根目录
 	MaxAuto  func() int64                                   // 超过该字节数的文件需要对端确认；<=0 表示不限
 	Confirm  func(h Header) bool                            // 收到需确认的传输时询问用户
 	OnClip   func(h Header, data []byte, topPaths []string) // 一次接收完成
 	Logf     func(format string, a ...any)
+	Progress func(id uint64, done, total int64)
+	Failed   func(id uint64)
 	sendMu   sync.Mutex
 	replies  chan bool
 	initOnce sync.Once
@@ -260,6 +263,9 @@ func (s *Session) Run() error {
 				continue
 			}
 			if err := s.begin(&h); err != nil {
+				if s.Failed != nil {
+					s.Failed(h.ID)
+				}
 				s.logf("接收剪贴板失败: %v", err)
 				s.abortRecv()
 			}
@@ -283,11 +289,22 @@ func (s *Session) Run() error {
 }
 
 func (s *Session) begin(h *Header) error {
+	if s.Wanted != nil && !s.Wanted(h.ID) {
+		if h.Confirm {
+			var b [8]byte
+			binary.BigEndian.PutUint64(b[:], h.ID)
+			s.C.Write(proto.MsgClipReject, b[:])
+		}
+		return errors.New("已失效的粘贴请求")
+	}
 	if h.Confirm {
 		ok := s.Confirm != nil && s.Confirm(*h)
 		id := make([]byte, 8)
 		binary.BigEndian.PutUint64(id, h.ID)
 		if !ok {
+			if s.Failed != nil {
+				s.Failed(h.ID)
+			}
 			s.C.Write(proto.MsgClipReject, id)
 			return nil
 		}
@@ -360,7 +377,13 @@ func (s *Session) advance() error {
 }
 
 func (s *Session) chunk(p []byte) error {
+	if s.Wanted != nil && !s.Wanted(s.rh.ID) {
+		return errors.New("粘贴已取消")
+	}
 	s.rgot += int64(len(p))
+	if s.Progress != nil {
+		s.Progress(s.rh.ID, s.rgot, s.rh.Total)
+	}
 	if s.rgot > s.rh.Total {
 		return errors.New("收到的数据超出声明大小")
 	}
@@ -421,6 +444,9 @@ func (s *Session) finish() {
 }
 
 func (s *Session) abortRecv() {
+	if s.rh != nil && s.Failed != nil {
+		s.Failed(s.rh.ID)
+	}
 	if s.rfile != nil {
 		s.rfile.Close()
 		s.rfile = nil

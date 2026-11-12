@@ -113,6 +113,11 @@ func kbdProc(nCode, wParam, lParam uintptr) uintptr {
 				physMods.Store(m)
 			}
 			if !up {
+				theCore.Interacted()
+				if !forward.Load() && vk == 0x56 && collapseMods(physMods.Load()) == core.ModCtrl && theCore.RequestPaste() {
+					swallowed[vk] = true
+					return 1
+				}
 				if swallowed[vk] {
 					return 1 // 热键按住不放产生的重复
 				}
@@ -151,6 +156,9 @@ func kbdProc(nCode, wParam, lParam uintptr) uintptr {
 }
 
 func mouseProc(nCode, wParam, lParam uintptr) uintptr {
+	if int32(nCode) == 0 && wParam != wmMouseMove && (*msllhook)(unsafe.Pointer(lParam)).Flags&llmhfInjected == 0 {
+		theCore.Interacted()
+	}
 	if int32(nCode) == 0 && forward.Load() {
 		m := (*msllhook)(unsafe.Pointer(lParam))
 		if m.Flags&llmhfInjected == 0 {

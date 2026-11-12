@@ -180,3 +180,17 @@ func promptAccessibility() bool {
 	})
 	return trusted
 }
+
+// Query advertised formats only; do not materialize large promised pasteboard items.
+func (*macPlatform) HasClip() (ok bool) {
+	withPool(func() {
+		types := pasteboard().Send(sel("types"))
+		for _, k := range []string{utiFileURL, utiText, utiPNG, utiTIFF} {
+			if types.Send(sel("containsObject:"), nsString(k)) != 0 {
+				ok = true
+				break
+			}
+		}
+	})
+	return
+}

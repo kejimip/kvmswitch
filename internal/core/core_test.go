@@ -16,6 +16,9 @@ import (
 
 // fake 是一个模拟的操作系统：记录核心对它的每一次调用。
 type fake struct {
+	app, focus uintptr
+	pasted     int
+	beforeRead func()
 	mu         sync.Mutex
 	os, name   string
 	dir        string
@@ -87,6 +90,9 @@ func (f *fake) ClipChange() uint64 {
 }
 func (f *fake) ReadClip() (xfer.Clip, bool) {
 	defer f.lock()()
+	if f.beforeRead != nil {
+		f.beforeRead()
+	}
 	if f.clip == nil {
 		return xfer.Clip{}, false
 	}
@@ -322,6 +328,15 @@ func TestClipboardFollowsSwitch(t *testing.T) {
 	r.fw.copyText("来自 Windows")
 	r.win.Hotkey(false)
 	r.active(ActivePeer, ActiveSelf)
+	r.wait("对端收到待粘贴通知", func() bool { return r.mac.pending.Load() != nil })
+	r.fm.get(func() {
+		if len(r.fm.written) != 0 {
+			t.Fatal("未按粘贴就传输了内容")
+		}
+	})
+	if !r.mac.RequestPaste() {
+		t.Fatal("未处理按需传输")
+	}
 	r.wait("Mac 收到剪贴板", func() bool {
 		var ok bool
 		r.fm.get(func() { ok = len(r.fm.written) == 1 && string(r.fm.written[0].Data) == "来自 Windows" })
@@ -342,6 +357,15 @@ func TestClipboardFollowsSwitch(t *testing.T) {
 	r.fm.copyText("来自 Mac")
 	r.win.Hotkey(false)
 	r.active(ActiveSelf, ActivePeer)
+	r.wait("对端收到待粘贴通知", func() bool { return r.win.pending.Load() != nil })
+	r.fw.get(func() {
+		if len(r.fw.written) != 0 {
+			t.Fatal("未按粘贴就传输了内容")
+		}
+	})
+	if !r.win.RequestPaste() {
+		t.Fatal("未处理按需传输")
+	}
 	r.wait("Windows 收到剪贴板", func() bool {
 		var ok bool
 		r.fw.get(func() { ok = len(r.fw.written) == 1 && string(r.fw.written[0].Data) == "来自 Mac" })
@@ -364,6 +388,15 @@ func TestCutThenPasteRecycles(t *testing.T) {
 	r.fm.get(func() { r.fm.pasteOn = 0x56 })
 	r.win.Hotkey(false)
 	r.active(ActivePeer, ActiveSelf)
+	r.wait("对端收到待粘贴通知", func() bool { return r.mac.pending.Load() != nil })
+	r.fm.get(func() {
+		if len(r.fm.written) != 0 {
+			t.Fatal("未按粘贴就传输了内容")
+		}
+	})
+	if !r.mac.RequestPaste() {
+		t.Fatal("未处理按需传输")
+	}
 	r.wait("文件到达 Mac", func() bool {
 		var ok bool
 		r.fm.get(func() { ok = len(r.fm.written) == 1 && len(r.fm.written[0].Paths) == 1 })
@@ -637,5 +670,59 @@ func TestSharedRoundTrip(t *testing.T) {
 	want.PairingKey, want.PeerHost, want.Port = "KEEP", "1.2.3.4", 5
 	if *got != want {
 		t.Fatalf("\n得到 %+v\n期望 %+v", *got, want)
+	}
+}
+
+func (f *fake) PasteApp() uintptr   { defer f.lock()(); return f.app }
+func (f *fake) PasteFocus() uintptr { defer f.lock()(); return f.focus }
+func (f *fake) PasteNow(app, focus uintptr) bool {
+	defer f.lock()()
+	if f.app != app || f.focus != focus {
+		return false
+	}
+	f.pasted++
+	return true
+}
+
+func TestDeferredPasteFocusAndClipboard(t *testing.T) {
+	for _, mode := range []string{"same", "newFocus", "newClip", "activity"} {
+		t.Run(mode, func(t *testing.T) {
+			r := newRig(t, true)
+			r.connected()
+			reading, resume := make(chan struct{}), make(chan struct{})
+			r.fw.copyText("on demand")
+			r.fw.get(func() { r.fw.beforeRead = func() { close(reading); <-resume } })
+			r.fm.get(func() { r.fm.app = 1; r.fm.focus = 2 })
+			r.win.Hotkey(false)
+			r.active(ActivePeer, ActiveSelf)
+			r.wait("offer", func() bool { return r.mac.pending.Load() != nil })
+			if !r.mac.RequestPaste() {
+				t.Fatal("paste not deferred")
+			}
+			select {
+			case <-reading:
+			case <-time.After(3 * time.Second):
+				close(resume)
+				t.Fatal("source not requested")
+			}
+			switch mode {
+			case "newClip":
+				r.fm.copyText("local")
+			case "newFocus":
+				r.fm.get(func() { r.fm.focus = 3 })
+			case "activity":
+				r.mac.Interacted()
+			}
+			close(resume)
+			r.wait("ticket cleared", func() bool { return r.mac.pending.Load() == nil })
+			r.fm.get(func() {
+				if (r.fm.pasted == 1) != (mode == "same") {
+					t.Fatalf("replayed=%d", r.fm.pasted)
+				}
+				if (len(r.fm.written) == 0) != (mode == "newClip") {
+					t.Fatalf("writes=%d", len(r.fm.written))
+				}
+			})
+		})
 	}
 }

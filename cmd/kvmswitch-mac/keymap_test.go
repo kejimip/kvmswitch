@@ -104,3 +104,17 @@ func TestSpecialKeys(t *testing.T) {
 		t.Error("vkModBit 不对")
 	}
 }
+
+func TestMediaKeyRoundTrip(t *testing.T) {
+	for vk, nx := range mediaKeys {
+		for _, phase := range []uint32{10, 11} {
+			v, down, ok := decodeMedia(uint32(nx)<<16 | phase<<8 | 1)
+			if !ok || v != vk || down != (phase == 10) {
+				t.Fatal(vk, phase, v, down)
+			}
+		}
+	}
+	if _, _, ok := decodeMedia(0xffff0a00); ok {
+		t.Fatal("unknown media key")
+	}
+}

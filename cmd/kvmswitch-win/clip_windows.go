@@ -331,3 +331,7 @@ func recycle(paths []string) error {
 	}
 	return nil
 }
+
+func (*winPlatform) HasClip() bool {
+	return hasFormat(cfHDrop) || hasFormat(cfUnicodeText) || hasFormat(cfPNG) || hasFormat(cfDIB)
+}

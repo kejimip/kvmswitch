@@ -113,6 +113,9 @@ func fatal(msg string) {
 }
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "--panel-window" {
+		os.Exit(runPanelWindow())
+	}
 	// --background：开机自启时使用，不弹出面板
 	// --restart：等待旧进程退出后接管
 	var background, restart bool
@@ -173,6 +176,7 @@ func main() {
 	if err != nil {
 		fatal("读取配置失败：\n" + err.Error() + "\n\n配置文件：" + configPath())
 	}
+	p.inj.fetch = c.RequestPaste
 	theCore = c
 	xfer.CleanOld(p.RecvDir(), 3)
 	if autostartEnabled() {

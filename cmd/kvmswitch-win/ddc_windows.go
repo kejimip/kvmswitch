@@ -128,3 +128,22 @@ func ddcReport() string {
 	}
 	return sb.String()
 }
+
+func (*winPlatform) CurrentInput() (uint16, error) {
+	ddcMu.Lock()
+	defer ddcMu.Unlock()
+	ms := enumPhysicalMonitors()
+	defer destroyMonitors(ms)
+	var found int
+	var val uint32
+	for _, m := range ms {
+		if v, _, ok := getVCP(m.Handle, vcpInput); ok {
+			found++
+			val = v
+		}
+	}
+	if found != 1 || val == 0 || val > 0xffff {
+		return 0, errors.New("未能唯一确定当前显示器和输入源，请使用手动设置")
+	}
+	return uint16(val), nil
+}

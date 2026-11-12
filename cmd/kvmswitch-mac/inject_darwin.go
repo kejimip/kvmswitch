@@ -76,6 +76,11 @@ func loadCG() error {
 	purego.RegisterLibFunc(&cgMainDisplayID, cg, "CGMainDisplayID")
 	purego.RegisterLibFunc(&cgDisplayPixelsWide, cg, "CGDisplayPixelsWide")
 	purego.RegisterLibFunc(&cgDisplayPixelsHigh, cg, "CGDisplayPixelsHigh")
+	purego.RegisterLibFunc(&axSystem, as, "AXUIElementCreateSystemWide")
+	purego.RegisterLibFunc(&axGet, as, "AXUIElementCopyAttributeValue")
+	purego.RegisterLibFunc(&axTimeout, as, "AXUIElementSetMessagingTimeout")
+	purego.RegisterLibFunc(&cfHash, cf, "CFHash")
+	purego.RegisterLibFunc(&cgPostPID, cg, "CGEventPostToPid")
 	purego.RegisterLibFunc(&cfRelease, cf, "CFRelease")
 	purego.RegisterLibFunc(&axIsProcessTrusted, as, "AXIsProcessTrusted")
 	purego.RegisterLibFunc(&axIsProcessTrustedWithOpts, as, "AXIsProcessTrustedWithOptions")
@@ -90,6 +95,9 @@ const (
 )
 
 type injector struct {
+	swallowPaste bool
+	mediaHeld    map[uint16]bool
+	fetch        func() bool
 	mu           sync.Mutex
 	src          uintptr
 	mods         modMap
@@ -118,7 +126,7 @@ type injector struct {
 }
 
 func newInjector() *injector {
-	return &injector{
+	return &injector{mediaHeld: map[uint16]bool{},
 		src:     cgEventSourceCreate(1), // kCGEventSourceStateHIDSystemState
 		modHeld: map[uint16]uint64{},
 		held:    map[uint16]bool{},
@@ -216,6 +224,10 @@ func (in *injector) leave() {
 	if !in.active {
 		return
 	}
+	for nx := range in.mediaHeld {
+		postMedia(nx, false, false)
+		delete(in.mediaHeld, nx)
+	}
 	for code := range in.held {
 		ev := cgEventCreateKeyboardEvent(in.src, code, false)
 		in.applyFlags(ev)
@@ -235,6 +247,7 @@ func (in *injector) leave() {
 			in.buttonLocked(b, false)
 		}
 	}
+	in.swallowPaste = false
 	in.active = false
 }
 
@@ -246,6 +259,15 @@ func (in *injector) key(vk uint16, flags byte) bool {
 		return false
 	}
 	down := flags&proto.KeyFlagDown != 0
+	if nx, media := mediaKeys[vk]; media {
+		postMedia(nx, down, in.mediaHeld[nx] && down)
+		if down {
+			in.mediaHeld[nx] = true
+		} else {
+			delete(in.mediaHeld, nx)
+		}
+		return false
+	}
 	code, ok := mapKey(vk, flags&proto.KeyFlagExtended != 0, in.mods)
 	if !ok {
 		return false
@@ -277,6 +299,16 @@ func (in *injector) key(vk uint16, flags byte) bool {
 		return false
 	}
 	repeat := down && in.held[code]
+	if code == kcV && in.swallowPaste {
+		if !down {
+			in.swallowPaste = false
+		}
+		return false
+	}
+	if code == kcV && down && in.flags&flagCommand != 0 && in.flags&(flagControl|flagShift) == 0 && in.fetch != nil && in.fetch() {
+		in.swallowPaste = true
+		return false
+	}
 	ev := cgEventCreateKeyboardEvent(in.src, code, down)
 	in.applyFlags(ev)
 	if repeat {
@@ -399,4 +431,24 @@ func (in *injector) wheel(dy, dx int32) {
 	}
 	in.applyFlags(ev)
 	in.post(ev)
+}
+
+func postMedia(nx uint16, down, repeat bool) {
+	withPool(func() {
+		phase := uint32(11)
+		if down {
+			phase = 10
+		}
+		r := uint32(0)
+		if repeat {
+			r = 1
+		}
+		type point struct{ X, Y float64 }
+		e := cls("NSEvent").Send(sel("otherEventWithType:location:modifierFlags:timestamp:windowNumber:context:subtype:data1:data2:"),
+			uintptr(14), point{}, uintptr(phase<<8), float64(0), int64(0), uintptr(0), int16(8), int64(uint32(nx)<<16|phase<<8|r), int64(-1))
+		if ev := uintptr(e.Send(sel("CGEvent"))); ev != 0 {
+			cgEventSetIntegerValueField(ev, fieldUserData, eventTag)
+			cgEventPost(0, ev)
+		}
+	})
 }

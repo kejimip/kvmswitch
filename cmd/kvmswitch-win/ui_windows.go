@@ -5,10 +5,8 @@ import (
 	"log"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
-	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -109,7 +107,7 @@ var (
 	msgTaskbarCreate uint32
 	keepAwake        atomic.Bool
 	panelSrv         *panel.Server
-	panelLaunch      atomic.Int64
+	panelLaunch      atomic.Bool
 )
 
 func uiRefresh(st core.State) {
@@ -225,26 +223,6 @@ func setAutostart(on bool) error {
 	return k.SetStringValue("KVMSwitch", `"`+exe+`" --background`)
 }
 
-func findBrowser() string {
-	var cands []string
-	for _, base := range []string{os.Getenv("ProgramFiles(x86)"), os.Getenv("ProgramFiles"), os.Getenv("LOCALAPPDATA")} {
-		if base != "" {
-			cands = append(cands, filepath.Join(base, `Microsoft\Edge\Application\msedge.exe`))
-		}
-	}
-	for _, base := range []string{os.Getenv("ProgramFiles"), os.Getenv("ProgramFiles(x86)"), os.Getenv("LOCALAPPDATA")} {
-		if base != "" {
-			cands = append(cands, filepath.Join(base, `Google\Chrome\Application\chrome.exe`))
-		}
-	}
-	for _, p := range cands {
-		if st, err := os.Stat(p); err == nil && !st.IsDir() {
-			return p
-		}
-	}
-	return ""
-}
-
 // openPanel 显示操作面板窗口；已打开则把它带到前台。tab 为要定位到的页面，可为空。
 func openPanel(tab string) {
 	if panelSrv == nil {
@@ -257,27 +235,20 @@ func openPanel(tab string) {
 		pSetForegroundWindow.Call(h)
 		return
 	}
-	// 窗口创建需要一点时间，避免连点时打开多个
-	now := time.Now().UnixNano()
-	if last := panelLaunch.Load(); now-last < int64(3*time.Second) || !panelLaunch.CompareAndSwap(last, now) {
+	if !panelLaunch.CompareAndSwap(false, true) {
 		return
 	}
-	url := panelSrv.URL(tab)
-	if exe := findBrowser(); exe != "" {
-		cmd := exec.Command(exe,
-			"--app="+url,
-			"--window-size=1060,760",
-			"--user-data-dir="+filepath.Join(dataDir(), "panel-profile"),
-			"--no-first-run", "--no-default-browser-check", "--disable-sync", "--disable-extensions",
-		)
-		if err := cmd.Start(); err == nil {
-			go cmd.Wait()
-			return
-		} else {
-			log.Printf("启动面板窗口失败，改用默认浏览器: %v", err)
-		}
+	defer panelLaunch.Store(false)
+	exe, err := os.Executable()
+	if err == nil {
+		cmd := exec.Command(exe, "--panel-window")
+		cmd.Env = append(os.Environ(), "KVMSWITCH_PANEL_URL="+panelSrv.URL(tab))
+		err = cmd.Run()
 	}
-	shellOpen(url)
+	if err != nil {
+		log.Printf("面板启动失败: %v", err)
+		theCore.P.Notify("面板启动失败", "请检查 WebView2 Runtime 是否已安装，再从托盘重开面板。")
+	}
 }
 
 // showMenu 是托盘右键菜单：只保留最常用的几项，其余都在操作面板里。

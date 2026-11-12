@@ -60,17 +60,22 @@ type Core struct {
 	peer     proto.Info
 	selfCan  bool
 
-	lastClip   uint64 // 最近一次已同步（或由我们写入）的剪贴板变化计数
-	nextID     uint64
-	cuts       map[uint64]*cutState // 本机“剪切”后发往对端的文件
-	pendCutID  uint64               // 对端“剪切”来的文件，等待本机粘贴
-	pendCutClp uint64
+	activity             atomic.Uint64
+	offerID, offerChange uint64
+	pending              atomic.Pointer[clipTicket]
+	transfer             atomic.Pointer[Transfer]
+	lastClip             uint64 // 最近一次已同步（或由我们写入）的剪贴板变化计数
+	nextID               uint64
+	cuts                 map[uint64]*cutState // 本机“剪切”后发往对端的文件
+	pendCutID            uint64               // 对端“剪切”来的文件，等待本机粘贴
+	pendCutClp           uint64
 
 	seq uint64
 	ddc *ddcAttempt
 
-	stMu sync.Mutex
-	st   State
+	probeBusy atomic.Bool
+	stMu      sync.Mutex
+	st        State
 }
 
 // New 读取配置并创建核心。created 表示本机是首次运行。
@@ -127,6 +132,12 @@ func (c *Core) Start() error {
 }
 
 func (c *Core) install(cfg *Config, p Parsed) {
+	if !cfg.SyncClipboard {
+		c.pending.Store(nil)
+		c.offerID = 0
+		c.transfer.Store(nil)
+		c.pendCutID = 0
+	}
 	c.cfgp.Store(cfg)
 	c.parsed = p
 	c.Keys.Set(p.Toggle, p.Emergency)
@@ -263,6 +274,10 @@ func (c *Core) SetPairing(key, host string) error {
 
 // MonitorTest 把显示器切到对端的输入口，10 秒后尝试切回。backErr 为切回时的错误（常见且不致命）。
 func (c *Core) MonitorTest() (backErr string, err error) {
+	if !c.probeBusy.CompareAndSwap(false, true) {
+		return "", errors.New("已有输入口测试进行中")
+	}
+	defer c.probeBusy.Store(false)
 	type in struct {
 		self, peer uint16
 		on, busy   bool
@@ -362,6 +377,11 @@ func (c *Core) switchTo(target string) {
 // setActive 落实键鼠归属变化在本机的全部效果。
 func (c *Core) setActive(a string) {
 	old := c.active
+	if old != a {
+		c.pending.Store(nil)
+		c.offerID = 0
+		c.transfer.Store(nil)
+	}
 	c.active = a
 	switch a {
 	case ActiveSelf:
@@ -509,16 +529,96 @@ func (c *Core) ddcReport(seq uint64, local bool, who string, err error) {
 // pushClipboard 若本机剪贴板有新内容，则发给对端。
 func (c *Core) pushClipboard() {
 	chg := c.P.ClipChange()
-	if chg == c.lastClip || c.data == nil {
+	if chg == 0 || chg == c.lastClip || c.ctrl == nil {
 		return
 	}
-	clip, ok := c.P.ReadClip()
-	c.lastClip = chg
-	if !ok {
+	if formats, ok := c.P.(interface{ HasClip() bool }); ok && !formats.HasClip() {
 		return
 	}
 	c.nextID++
-	id := c.nextID
+	c.offerID, c.offerChange = c.nextID, chg
+	c.sendClipID(proto.MsgClipOffer, c.offerID)
+}
+
+func (c *Core) sendClipID(typ byte, id uint64) {
+	if c.ctrl == nil {
+		return
+	}
+	var b [8]byte
+	binary.BigEndian.PutUint64(b[:], id)
+	c.ctrl.Write(typ, b[:])
+}
+
+type pasteHost interface {
+	PasteApp() uintptr
+	PasteFocus() uintptr
+	PasteNow(app, focus uintptr) bool
+}
+
+func (c *Core) Interacted() { c.activity.Add(1) }
+
+type clipTicket struct {
+	app, focus uintptr
+	epoch      uint64
+	id, local  uint64
+	started    atomic.Bool
+}
+type Transfer struct {
+	Status      string
+	Done, Total int64
+}
+
+func (c *Core) TransferState() *Transfer { return c.transfer.Load() }
+
+// Called before the OS sees a paste shortcut. Never wait for network I/O in a keyboard callback.
+func (c *Core) RequestPaste() bool {
+	t := c.pending.Load()
+	if t == nil || !c.Config().SyncClipboard || c.activeA.Load() != 1 {
+		return false
+	}
+	if t.local != c.P.ClipChange() {
+		if c.pending.CompareAndSwap(t, nil) {
+			c.transfer.Store(&Transfer{Status: "本机已复制新内容，使用本机剪贴板"})
+		}
+		return false
+	}
+	if t.started.CompareAndSwap(false, true) {
+		epoch := c.activity.Load()
+		var app uintptr
+		host, native := c.P.(pasteHost)
+		if native {
+			app = host.PasteApp()
+		}
+		select {
+		case c.ev <- func() {
+			if c.pending.Load() == t {
+				t.app, t.epoch = app, epoch
+				if native && app != 0 && host.PasteApp() == app && c.activity.Load() == epoch {
+					t.focus = host.PasteFocus()
+				}
+				c.transfer.Store(&Transfer{Status: "正在准备传输"})
+				c.sendClipID(proto.MsgClipFetch, t.id)
+			}
+		}:
+		default:
+			t.started.Store(false)
+		}
+	}
+	return true
+}
+
+func (c *Core) fetchClip(id uint64) {
+	if id != c.offerID || c.active != ActivePeer || !c.Config().SyncClipboard || c.data == nil || c.P.ClipChange() != c.offerChange {
+		c.sendClipID(proto.MsgClipUnavailable, id)
+		return
+	}
+	clip, ok := c.P.ReadClip()
+	if !ok || c.P.ClipChange() != c.offerChange {
+		c.sendClipID(proto.MsgClipUnavailable, id)
+		return
+	}
+	c.offerID = 0
+	change := c.offerChange
 	sess := c.data
 	c.cuts = map[uint64]*cutState{}
 	if clip.Kind == xfer.KindFiles && clip.Cut {
@@ -530,14 +630,19 @@ func (c *Core) pushClipboard() {
 			log.Printf("剪贴板发送失败: %v", err)
 		}
 		c.do(func() {
+			if c.data != sess {
+				return
+			}
 			st := c.cuts[id]
 			if err != nil {
 				delete(c.cuts, id)
+				c.sendClipID(proto.MsgClipUnavailable, id)
 				if clip.Kind == xfer.KindFiles {
 					c.lastClip = 0 // 下次切换时重试
 				}
 				return
 			}
+			c.lastClip = change
 			if st != nil {
 				st.done = true
 				if st.pastePending {
@@ -823,6 +928,30 @@ func (c *Core) runControl(pc *proto.Conn) {
 					c.ddcReport(r.Seq, false, c.peerLabel(), err)
 				})
 			}
+		case proto.MsgClipOffer, proto.MsgClipFetch, proto.MsgClipUnavailable:
+			if len(p) != 8 {
+				continue
+			}
+			id := binary.BigEndian.Uint64(p)
+			c.do(func() {
+				if c.ctrl != pc {
+					return
+				}
+				switch t {
+				case proto.MsgClipFetch:
+					c.fetchClip(id)
+				case proto.MsgClipOffer:
+					if c.active == ActiveSelf && c.Config().SyncClipboard {
+						c.pending.Store(&clipTicket{id: id, local: c.P.ClipChange()})
+						c.transfer.Store(&Transfer{Status: "等待粘贴"})
+					}
+				case proto.MsgClipUnavailable:
+					if q := c.pending.Load(); q != nil && q.id == id {
+						c.pending.Store(nil)
+						c.transfer.Store(&Transfer{Status: "未传输：内容已变更、为空或传输已取消"})
+					}
+				}
+			})
 		case proto.MsgPasteDetected:
 			if len(p) >= 8 {
 				id := binary.BigEndian.Uint64(p)
@@ -830,6 +959,9 @@ func (c *Core) runControl(pc *proto.Conn) {
 			}
 		case proto.MsgKey:
 			if len(p) >= 5 && c.activeA.Load() == 1 {
+				if p[4]&proto.KeyFlagDown != 0 {
+					c.Interacted()
+				}
 				if c.P.InjectKey(binary.BigEndian.Uint16(p), p[4]) {
 					c.try(c.checkPaste)
 				}
@@ -840,10 +972,12 @@ func (c *Core) runControl(pc *proto.Conn) {
 			}
 		case proto.MsgMouseButton:
 			if len(p) >= 2 && c.activeA.Load() == 1 {
+				c.Interacted()
 				c.P.InjectButton(int(p[0]), p[1] != 0)
 			}
 		case proto.MsgWheel:
 			if len(p) >= 8 && c.activeA.Load() == 1 {
+				c.Interacted()
 				c.P.InjectWheel(int32(binary.BigEndian.Uint32(p)), int32(binary.BigEndian.Uint32(p[4:])))
 			}
 		}
@@ -858,6 +992,11 @@ func (c *Core) runControl(pc *proto.Conn) {
 
 // detach 处理控制通道断开：两台设备恢复各自独立。
 func (c *Core) detach() {
+	c.cuts = map[uint64]*cutState{}
+	c.pendCutID = 0
+	c.lastClip = 0
+	c.pending.Store(nil)
+	c.offerID = 0
 	close(c.ctrlStop)
 	c.ctrl, c.ctrlStop = nil, nil
 	c.peer = proto.Info{}
@@ -974,17 +1113,51 @@ func (c *Core) runData(pc *proto.Conn) {
 		},
 		Logf: log.Printf,
 	}
-	s.OnClip = func(h xfer.Header, data []byte, paths []string) {
-		if !c.Config().SyncClipboard {
-			return
+	s.Wanted = func(id uint64) bool {
+		q := c.pending.Load()
+		return q != nil && q.id == id && q.started.Load() && c.Config().SyncClipboard
+	}
+	s.Progress = func(id uint64, done, total int64) {
+		if q := c.pending.Load(); q != nil && q.id == id {
+			c.transfer.Store(&Transfer{Status: "接收中", Done: done, Total: total})
 		}
-		chg, err := c.P.WriteClip(h.Kind, data, paths)
-		if err != nil {
-			log.Printf("写入剪贴板失败: %v", err)
-			return
-		}
-		log.Printf("收到剪贴板: %s，%s", h.Kind, xfer.HumanSize(h.Total))
+	}
+	s.Failed = func(id uint64) {
 		c.do(func() {
+			if q := c.pending.Load(); q != nil && q.id == id {
+				c.pending.Store(nil)
+				c.transfer.Store(&Transfer{Status: "接收失败或已取消"})
+			}
+		})
+	}
+	s.OnClip = func(h xfer.Header, data []byte, paths []string) {
+		c.do(func() {
+			q := c.pending.Load()
+			if c.data != s || q == nil || !q.started.Load() || q.id != h.ID {
+				return
+			}
+			defer c.pending.CompareAndSwap(q, nil)
+			if !c.Config().SyncClipboard || c.P.ClipChange() != q.local {
+				c.transfer.Store(&Transfer{Status: "本机已复制新内容，未覆盖剪贴板"})
+				return
+			}
+			chg, err := c.P.WriteClip(h.Kind, data, paths)
+			if err != nil {
+				c.transfer.Store(&Transfer{Status: "写入剪贴板失败"})
+				log.Printf("写入剪贴板失败: %v", err)
+				return
+			}
+			log.Printf("收到剪贴板: %s，%s", h.Kind, xfer.HumanSize(h.Total))
+			auto := false
+			if host, ok := c.P.(pasteHost); ok && !h.Cut && q.app != 0 && q.focus != 0 && q.epoch == c.activity.Load() && c.P.ClipChange() == chg && c.active == ActiveSelf {
+				auto = host.PasteNow(q.app, q.focus)
+			}
+			if auto {
+				c.transfer.Store(&Transfer{Status: "已发送粘贴快捷键", Done: h.Total, Total: h.Total})
+			} else {
+				c.transfer.Store(&Transfer{Status: "已就绪，请在目标位置粘贴", Done: h.Total, Total: h.Total})
+				c.P.Notify("剪贴板已就绪", "请在目标位置再次粘贴。")
+			}
 			c.lastClip = chg
 			c.pendCutID, c.pendCutClp = 0, 0
 			if h.Kind == xfer.KindFiles && h.Cut {
@@ -1002,7 +1175,47 @@ func (c *Core) runData(pc *proto.Conn) {
 	pc.Close()
 	c.do(func() {
 		if c.data == s {
+			c.pending.Store(nil)
+			c.transfer.Store(&Transfer{Status: "数据通道断开"})
 			c.data = nil
 		}
 	})
+}
+
+// ProbePort never persists guesses; restoration does not depend on the panel staying open.
+func (c *Core) ProbePort(name string) error {
+	v, ok := map[string]uint16{"hdmi1": 17, "hdmi2": 18, "dp1": 15, "dp2": 16}[name]
+	if !ok {
+		return errors.New("未知的候选接口")
+	}
+	if !c.probeBusy.CompareAndSwap(false, true) {
+		return errors.New("正在测试其他接口")
+	}
+	defer c.probeBusy.Store(false)
+	if c.State().Active == ActivePeer {
+		return errors.New("请先把键鼠切回本机")
+	}
+	cfg := c.Config()
+	back := cfg.WindowsInput
+	if c.P.OS() == "mac" {
+		back = cfg.MacInput
+	}
+	origin, err := ParseInput(back)
+	if err != nil {
+		return err
+	}
+	if reader, ok := c.P.(interface{ CurrentInput() (uint16, error) }); ok {
+		origin, err = reader.CurrentInput()
+		if err != nil {
+			return err
+		}
+	}
+	if err = c.P.SetMonitorInput(v, cfg); err != nil {
+		return err
+	}
+	time.Sleep(6 * time.Second)
+	if err = c.P.SetMonitorInput(origin, cfg); err != nil {
+		return fmt.Errorf("已试切，但未能恢复，请用显示器按键切回：%w", err)
+	}
+	return nil
 }

@@ -337,6 +337,7 @@ func main() {
 	if err != nil {
 		fatal("读取配置失败：" + err.Error() + "\n\n配置文件：" + cfgPath())
 	}
+	p.inj.fetch = c.RequestPaste
 	p.core = c
 	p.tap = newTap(c, p.inj)
 	p.tap.tune(c.Config())

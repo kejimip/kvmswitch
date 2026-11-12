@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+<Product Name="KVMSwitch" Id="*" Manufacturer="KVMSwitch" Language="1033" Version="$(var.Version)" UpgradeCode="B7CF82E2-CA97-429C-8EDB-4C25DC4273DD">
+ <Package InstallerVersion="500" Compressed="yes" InstallScope="perUser"/>
+ <MajorUpgrade DowngradeErrorMessage="A newer version is already installed."/>
+ <MediaTemplate EmbedCab="yes"/>
+ <Icon Id="AppIcon.ico" SourceFile="packaging/KVMSwitch.ico"/><Property Id="ARPPRODUCTICON" Value="AppIcon.ico"/>
+ <Directory Id="TARGETDIR" Name="SourceDir">
+  <Directory Id="LocalAppDataFolder"><Directory Id="INSTALLDIR" Name="KVMSwitchApp">
+   <Component Id="Application" Guid="F3E8E7BF-9F00-4F8E-81E6-ABED881FB33D">
+    <File Id="KVMExe" Source="dist/kvmswitch.exe"/>
+    <Shortcut Id="StartShortcut" Directory="ProgramMenuFolder" Name="KVMSwitch" Target="[#KVMExe]" WorkingDirectory="INSTALLDIR" Icon="AppIcon.ico"/>
+    <RemoveFolder Id="RemoveInstallDir" Directory="INSTALLDIR" On="uninstall"/>
+    <RegistryValue Root="HKCU" Key="Software\KVMSwitch\Installer" Name="Installed" Type="integer" Value="1" KeyPath="yes"/>
+   </Component>
+  </Directory></Directory>
+  <Directory Id="ProgramMenuFolder"/>
+ </Directory>
+ <Feature Id="Complete" Title="KVMSwitch" Level="1"><ComponentRef Id="Application"/></Feature>
+</Product></Wix>
