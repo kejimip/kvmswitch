@@ -359,7 +359,7 @@ func main() {
 		}
 		log.Printf("KVMSwitch %s 已启动，热键 %s，紧急热键 %s", core.Version, c.Config().Hotkey, c.Config().EmergencyHotkey)
 		if !p.CanControl() {
-			log.Printf("尚未获得“辅助功能”权限")
+			log.Printf("尚未获得键鼠控制权限")
 			promptAccessibility()
 		}
 		switch {

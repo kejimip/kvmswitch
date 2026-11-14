@@ -94,7 +94,7 @@ func (t *tap) tune(cfg *core.Config) {
 	t.mods.Store(&m)
 }
 
-// start 创建事件监听。没有“辅助功能”权限时创建会失败，此时在后台重试直到用户授权。
+// start 创建事件监听。没有键鼠控制权限时创建会失败，此时在后台重试直到用户授权。
 func (t *tap) start() {
 	cb := purego.NewCallback(t.callback)
 	var mask uint64
@@ -118,7 +118,7 @@ func (t *tap) start() {
 	if try() {
 		return
 	}
-	log.Printf("暂时无法监听键鼠（需要“辅助功能”权限），授权后会自动生效")
+	log.Printf("暂时无法监听键鼠（需要键鼠控制权限），授权后会自动生效")
 	go func() {
 		for !try() {
 			time.Sleep(2 * time.Second)

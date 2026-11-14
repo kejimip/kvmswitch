@@ -130,8 +130,8 @@ pre{margin:0;padding:14px 18px;font:12.5px/1.6 Consolas,"Cascadia Mono",Menlo,mo
     <section id="home">
       <h1>概览</h1>
       <p class="sub" id="homeSub">正在读取状态…</p>
-      <div class="banner" id="selfBanner">本机还没有授予“辅助功能”权限，无法识别热键，也无法接受另一台设备的键鼠。请在 系统设置 › 隐私与安全性 › 辅助功能 中打开 KVMSwitch。 <button class="link" data-open="accessibility">打开系统设置</button></div>
-      <div class="banner" id="peerBanner">另一台设备还没有授予“辅助功能”权限，切换过去后键鼠无法使用。请在那台 Mac 的 系统设置 › 隐私与安全性 › 辅助功能 中打开 KVMSwitch。</div>
+      <div class="banner" id="selfBanner">这台 Mac 尚未允许 KVMSwitch 控制键鼠。请前往「系统设置 › 隐私与安全 › 设备控制和数据访问」，开启 KVMSwitch。部分旧版系统将此项称为“辅助功能”。 <button class="link" data-open="accessibility">打开系统设置</button></div>
+      <div class="banner" id="peerBanner">另一台 Mac 尚未允许 KVMSwitch 控制键鼠。请在那台 Mac 上前往「系统设置 › 隐私与安全 › 设备控制和数据访问」，开启 KVMSwitch。部分旧版系统将此项称为“辅助功能”。</div>
       <div class="card">
         <div class="hero">
           <div class="dev" id="devSelf">
@@ -157,7 +157,7 @@ pre{margin:0;padding:14px 18px;font:12.5px/1.6 Consolas,"Cascadia Mono",Menlo,mo
       <div class="card checks">
         <h2>状态检查</h2>
         <div class="row"><div class="lbl"><b>两台设备的连接</b><span id="ckConnTxt"></span></div><div class="ctl"><button class="link" data-goto="pair" id="ckConnLink">去连接</button><span class="st" id="ckConn"></span></div></div>
-        <div class="row"><div class="lbl"><b>Mac 辅助功能权限</b><span>Mac 需要这项权限才能识别热键和接受键鼠</span></div><div class="ctl"><span class="st" id="ckAx"></span></div></div>
+        <div class="row"><div class="lbl"><b>Mac 键鼠控制权限</b><span>Mac 需要这项权限才能识别热键和接受键鼠</span></div><div class="ctl"><span class="st" id="ckAx"></span></div></div>
         <div class="row"><div class="lbl"><b>显示器随切换</b><span id="ckMonTxt"></span></div><div class="ctl"><button class="link" data-goto="display">设置</button><span class="st" id="ckMon"></span></div></div>
         <div class="row"><div class="lbl"><b>剪贴板同步</b><span>切换只通知对端，按粘贴快捷键时才传输</span></div><div class="ctl"><button class="link" data-goto="clip">设置</button><span class="st" id="ckClip"></span></div></div>
       </div>
@@ -238,7 +238,7 @@ pre{margin:0;padding:14px 18px;font:12.5px/1.6 Consolas,"Cascadia Mono",Menlo,mo
         <h2>首次连接</h2>
         <div class="step"><div class="n">1</div><div><p><b>两台设备都运行 KVMSwitch</b></p><p>并接入同一个局域网，最好都用网线。</p></div></div>
         <div class="step"><div class="n">2</div><div><p><b>让两台设备使用同一个密钥</b></p><p>在任意一台上复制“本机密钥”，到另一台的这个页面填入“另一台设备的密钥”。只需要做一次，方向随意。</p></div></div>
-        <div class="step"><div class="n">3</div><div><p><b>在 Mac 上授权</b></p><p>系统设置 › 隐私与安全性 › 辅助功能，打开 KVMSwitch；弹出“查找本地网络上的设备”时选允许。</p></div></div>
+        <div class="step"><div class="n">3</div><div><p><b>在 Mac 上授权</b></p><p>前往「系统设置 › 隐私与安全 › 设备控制和数据访问」（部分旧版系统称为“辅助功能”），开启 KVMSwitch；弹出“查找本地网络上的设备”时选允许。</p></div></div>
         <div class="step"><div class="n">4</div><div><p><b>等待连接</b></p><p>两台设备会自动找到对方。<span class="st" id="pairSt"></span></p></div></div>
       </div>
       <div class="card">

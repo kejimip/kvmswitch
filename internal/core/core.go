@@ -343,12 +343,12 @@ func (c *Core) switchTo(target string) {
 	}
 	if target == ActivePeer && !c.peer.CanControl {
 		c.P.Beep()
-		c.P.Notify("无法切换", c.peerLabel()+" 还没有授予“辅助功能”权限，切过去后键鼠无法使用。")
+		c.P.Notify("无法切换", c.peerLabel()+" 还没有授予键鼠控制权限，切过去后键鼠无法使用。")
 		return
 	}
 	if target == ActiveSelf && !c.selfCan {
 		c.P.Beep()
-		c.P.Notify("无法切换", "本机还没有授予“辅助功能”权限，无法接受另一台设备的键鼠。")
+		c.P.Notify("无法切换", "本机还没有授予键鼠控制权限，无法接受另一台设备的键鼠。")
 		return
 	}
 	prev := c.active
