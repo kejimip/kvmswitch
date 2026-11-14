@@ -7,6 +7,7 @@ import (
 	"image"
 	"image/draw"
 	"image/png"
+	"log"
 	"runtime"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ import (
 
 	"golang.org/x/sys/windows"
 
+	"kvmswitch/internal/clipimage"
 	"kvmswitch/internal/xfer"
 )
 
@@ -31,6 +33,35 @@ var (
 	cfDropEffect = regFormat("Preferred DropEffect")
 )
 
+type imageFormat struct {
+	id  uintptr
+	ext string
+}
+
+var extraImages = func() []imageFormat {
+	var formats []imageFormat
+	for _, f := range [][2]string{
+		{"image/svg+xml", ".svg"},
+		{"image/jpeg", ".jpg"},
+		{"JFIF", ".jpg"},
+		{"image/webp", ".webp"},
+		{"WebP", ".webp"},
+		{"image/gif", ".gif"},
+		{"GIF", ".gif"},
+		{"image/tiff", ".tiff"},
+		{"image/bmp", ".bmp"},
+		{"image/avif", ".avif"},
+		{"image/heif", ".heif"},
+		{"image/heic", ".heic"},
+		{"image/x-icon", ".ico"},
+	} {
+		if id := regFormat(f[0]); id != 0 {
+			formats = append(formats, imageFormat{id, f[1]})
+		}
+	}
+	return formats
+}()
+
 func regFormat(name string) uintptr {
 	r, _, _ := pRegisterClipboardFormat.Call(uintptr(unsafe.Pointer(u16(name))))
 	return r
@@ -41,9 +72,9 @@ func clipboardSeq() uint32 {
 	return uint32(r)
 }
 
-func openClipboard() bool {
+func openClipboard(owner uintptr) bool {
 	for i := 0; i < 20; i++ {
-		if r, _, _ := pOpenClipboard.Call(0); r != 0 {
+		if r, _, _ := pOpenClipboard.Call(owner); r != 0 {
 			return true
 		}
 		time.Sleep(15 * time.Millisecond)
@@ -57,13 +88,16 @@ func hasFormat(f uintptr) bool {
 }
 
 // globalBytes 复制一个 HGLOBAL 的内容。
-func globalBytes(h uintptr) []byte {
+func globalBytes(h, limit uintptr) []byte {
 	if h == 0 {
 		return nil
 	}
 	size, _, _ := pGlobalSize.Call(h)
+	if size == 0 || size > limit {
+		return nil
+	}
 	p, _, _ := pGlobalLock.Call(h)
-	if p == 0 || size == 0 {
+	if p == 0 {
 		return nil
 	}
 	defer pGlobalUnlock.Call(h)
@@ -74,7 +108,16 @@ func globalBytes(h uintptr) []byte {
 
 func getData(f uintptr) []byte {
 	h, _, _ := pGetClipboardData.Call(f)
-	return globalBytes(h)
+	return globalBytes(h, ^uintptr(0))
+}
+
+func getImageData(f uintptr) []byte {
+	h, _, _ := pGetClipboardData.Call(f)
+	limit := uintptr(clipimage.MaxBytes)
+	if f == cfDIB || f == cfDIBV5 {
+		limit = (24<<20)*4 + (1 << 20)
+	}
+	return globalBytes(h, limit)
 }
 
 // readClipboard 读取当前剪贴板，优先级：文件 > 图片 > 文本。
@@ -82,7 +125,7 @@ func readClipboard() (xfer.Clip, bool) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	var clip xfer.Clip
-	if !openClipboard() {
+	if !openClipboard(0) {
 		return clip, false
 	}
 	defer pCloseClipboard.Call()
@@ -106,7 +149,7 @@ func readClipboard() (xfer.Clip, bool) {
 			}
 		}
 	}
-	if img, ok := clipboardImage(hasFormat, getData); ok {
+	if img, ok := clipboardImage(hasFormat, getImageData); ok {
 		return xfer.Clip{Kind: xfer.KindImage, Data: img}, true
 	}
 	if hasFormat(cfUnicodeText) {
@@ -128,8 +171,15 @@ func clipboardImage(has func(uintptr) bool, get func(uintptr) []byte) ([]byte, b
 	for _, f := range []uintptr{cfPNG, cfMimePNG} {
 		if f != 0 && has(f) {
 			b := get(f)
-			if _, err := png.DecodeConfig(bytes.NewReader(b)); err == nil {
+			if c, err := png.DecodeConfig(bytes.NewReader(b)); err == nil && clipimage.ValidSize(c.Width, c.Height) {
 				return b, true
+			}
+		}
+	}
+	for _, f := range extraImages {
+		if has(f.id) {
+			if p := clipimage.Preview(get(f.id), f.ext); p != nil {
+				return p, true
 			}
 		}
 	}
@@ -164,11 +214,22 @@ func setData(f uintptr, data []byte) error {
 
 // writeClipboard 把收到的内容写入本机剪贴板，返回写入后的序列号。
 func writeClipboard(kind string, data []byte, paths []string) (uint32, error) {
-	if !openClipboard() {
+	var filePNG, fileDIB []byte
+	if kind == xfer.KindFiles {
+		filePNG = clipimage.FilePreview(paths)
+		if filePNG != nil {
+			fileDIB, _ = pngToDIB(filePNG)
+		}
+	}
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	if hwndMain == 0 || !openClipboard(hwndMain) {
 		return 0, errors.New("无法打开剪贴板")
 	}
 	defer pCloseClipboard.Call()
-	pEmptyClipboard.Call()
+	if r, _, _ := pEmptyClipboard.Call(); r == 0 {
+		return 0, errors.New("无法清空剪贴板")
+	}
 	var err error
 	switch kind {
 	case xfer.KindText:
@@ -204,6 +265,14 @@ func writeClipboard(kind string, data []byte, paths []string) (uint32, error) {
 		err = setData(cfHDrop, buf)
 		if err == nil {
 			setData(cfDropEffect, []byte{1, 0, 0, 0}) // DROPEFFECT_COPY
+			if filePNG != nil {
+				setData(cfPNG, filePNG)
+			}
+			if len(fileDIB) > 0 {
+				if e := setData(cfDIB, fileDIB); e != nil {
+					log.Printf("图片文件已就绪，但附加位图失败: %v", e)
+				}
+			}
 		}
 	default:
 		err = errors.New("未知的剪贴板类型")
@@ -233,7 +302,7 @@ func dibToPNG(b []byte) ([]byte, error) {
 		off += 12 // 紧跟在头后面的三个颜色掩码
 	}
 	stride := (w*bpp + 31) / 32 * 4
-	if w > 32768 || h > 32768 || len(b) < off+stride*h {
+	if !clipimage.ValidSize(w, h) || w > 32768 || h > 32768 || len(b) < off+stride*h {
 		return nil, errors.New("DIB 数据不完整")
 	}
 	img := image.NewNRGBA(image.Rect(0, 0, w, h))
@@ -276,10 +345,18 @@ func dibToPNG(b []byte) ([]byte, error) {
 
 // pngToDIB 生成 32 位自下而上的 CF_DIB。
 func pngToDIB(p []byte) ([]byte, error) {
+	c, err := png.DecodeConfig(bytes.NewReader(p))
+	if err != nil || !clipimage.ValidSize(c.Width, c.Height) {
+		return nil, errors.New("PNG 尺寸无效或超限")
+	}
 	src, err := png.Decode(bytes.NewReader(p))
 	if err != nil {
 		return nil, err
 	}
+	return imageToDIB(src), nil
+}
+
+func imageToDIB(src image.Image) []byte {
 	r := src.Bounds()
 	w, h := r.Dx(), r.Dy()
 	img := image.NewNRGBA(image.Rect(0, 0, w, h))
@@ -304,9 +381,14 @@ func pngToDIB(p []byte) ([]byte, error) {
 			drow[x*4+3] = 255
 		}
 	}
-	return out, nil
+	return out
 }
 
 func (*winPlatform) HasClip() bool {
+	for _, f := range extraImages {
+		if hasFormat(f.id) {
+			return true
+		}
+	}
 	return hasFormat(cfHDrop) || hasFormat(cfUnicodeText) || hasFormat(cfPNG) || hasFormat(cfMimePNG) || hasFormat(cfDIBV5) || hasFormat(cfDIB)
 }

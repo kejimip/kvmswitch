@@ -10,17 +10,33 @@ import (
 	"github.com/ebitengine/purego"
 	"github.com/ebitengine/purego/objc"
 
+	"kvmswitch/internal/clipimage"
 	"kvmswitch/internal/xfer"
 )
 
 // 通过 Objective-C 运行时访问 NSPasteboard。
 
 const (
-	utiText    = "public.utf8-plain-text"
-	utiPNG     = "public.png"
+	utiText = "public.utf8-plain-text"
+	utiPNG  = "public.png"
+
 	utiTIFF    = "public.tiff"
 	utiFileURL = "public.file-url"
 )
+
+var pasteboardImages = [][2]string{
+	{utiPNG, ".png"},
+	{"public.avif", ".avif"},
+	{"public.heic", ".heic"},
+	{"public.heif", ".heif"},
+	{"public.jpeg", ".jpg"},
+	{"public.svg-image", ".svg"},
+	{"public.webp", ".webp"},
+	{"org.webmproject.webp", ".webp"},
+	{"com.compuserve.gif", ".gif"},
+	{"com.microsoft.bmp", ".bmp"},
+	{"com.microsoft.ico", ".ico"},
+	{utiTIFF, ".tiff"}}
 
 var (
 	selMu    sync.Mutex
@@ -70,8 +86,11 @@ func nsDataBytes(d objc.ID) []byte {
 		return nil
 	}
 	n := objc.Send[uint](d, sel("length"))
+	if n == 0 || n > clipimage.MaxBytes {
+		return nil
+	}
 	p := objc.Send[unsafe.Pointer](d, sel("bytes"))
-	if n == 0 || p == nil {
+	if p == nil {
 		return nil
 	}
 	out := make([]byte, n)
@@ -94,7 +113,7 @@ func pbChangeCount() int {
 	return n
 }
 
-// readPasteboard 读取剪贴板，优先级：文件 > 文本 > 图片。
+// readPasteboard 读取剪贴板，优先级：文件 > 图片 > 文本。
 func readPasteboard() (clip xfer.Clip, ok bool) {
 	withPool(func() {
 		pb := pasteboard()
@@ -120,23 +139,28 @@ func readPasteboard() (clip xfer.Clip, ok bool) {
 			clip.Kind, ok = xfer.KindFiles, true
 			return
 		}
-		if s := goString(pb.Send(sel("stringForType:"), nsString(utiText))); s != "" {
-			clip.Kind, clip.Data, ok = xfer.KindText, []byte(s), true
-			return
-		}
-		if b := nsDataBytes(pb.Send(sel("dataForType:"), nsString(utiPNG))); len(b) > 8 {
-			clip.Kind, clip.Data, ok = xfer.KindImage, b, true
-			return
-		}
-		if tiff := pb.Send(sel("dataForType:"), nsString(utiTIFF)); tiff != 0 {
-			rep := cls("NSBitmapImageRep").Send(sel("imageRepWithData:"), tiff)
-			if rep != 0 {
-				props := cls("NSDictionary").Send(sel("dictionary"))
-				// NSBitmapImageFileTypePNG = 4
-				if b := nsDataBytes(rep.Send(sel("representationUsingType:properties:"), uint(4), props)); len(b) > 8 {
-					clip.Kind, clip.Data, ok = xfer.KindImage, b, true
+		for _, f := range pasteboardImages {
+			d := pb.Send(sel("dataForType:"), nsString(f[0]))
+			raw := nsDataBytes(d)
+			if len(raw) == 0 {
+				continue
+			}
+			b := clipimage.Preview(raw, f[1])
+			// AppKit also understands TIFF variants not covered by the portable decoder.
+			if b == nil && f[0] == utiTIFF {
+				rep := cls("NSBitmapImageRep").Send(sel("imageRepWithData:"), d)
+				if rep != 0 && clipimage.ValidSize(objc.Send[int](rep, sel("pixelsWide")), objc.Send[int](rep, sel("pixelsHigh"))) {
+					props := cls("NSDictionary").Send(sel("dictionary"))
+					b = nsDataBytes(rep.Send(sel("representationUsingType:properties:"), uint(4), props))
 				}
 			}
+			if b != nil {
+				clip.Kind, clip.Data, ok = xfer.KindImage, b, true
+				return
+			}
+		}
+		if s := goString(pb.Send(sel("stringForType:"), nsString(utiText))); s != "" {
+			clip.Kind, clip.Data, ok = xfer.KindText, []byte(s), true
 		}
 	})
 	return
@@ -155,8 +179,8 @@ func writePasteboard(kind string, data []byte, paths []string) (count int, err e
 			okv = objc.Send[bool](pb, sel("setData:forType:"), nsData(data), nsString(utiPNG))
 		case xfer.KindFiles:
 			// One pasteboard item with two representations: Finder consumes the
-			// file URL, while image editors can request the original PNG bytes.
-			if data := singlePNGFile(paths); data != nil {
+			// file URL, while image editors can request the image pixels.
+			if data := clipimage.FilePreview(paths); data != nil {
 				item := cls("NSPasteboardItem").Send(sel("new"))
 				if item != 0 {
 					defer item.Send(sel("release"))
@@ -190,10 +214,14 @@ func writePasteboard(kind string, data []byte, paths []string) (count int, err e
 func (*macPlatform) HasClip() (ok bool) {
 	withPool(func() {
 		types := pasteboard().Send(sel("types"))
-		for _, k := range []string{utiFileURL, utiText, utiPNG, utiTIFF} {
-			if types.Send(sel("containsObject:"), nsString(k)) != 0 {
+		if types.Send(sel("containsObject:"), nsString(utiFileURL)) != 0 || types.Send(sel("containsObject:"), nsString(utiText)) != 0 {
+			ok = true
+			return
+		}
+		for _, f := range pasteboardImages {
+			if types.Send(sel("containsObject:"), nsString(f[0])) != 0 {
 				ok = true
-				break
+				return
 			}
 		}
 	})

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"image"
 	"image/png"
+	"kvmswitch/internal/clipimage"
 	"os"
 	"path/filepath"
 	"testing"
@@ -19,18 +20,18 @@ func TestSinglePNGFile(t *testing.T) {
 	if err := os.WriteFile(p, b.Bytes(), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(singlePNGFile([]string{p}), b.Bytes()) {
+	if !bytes.Equal(clipimage.FilePreview([]string{p}), b.Bytes()) {
 		t.Fatal("original bytes not preserved")
 	}
 	for _, paths := range [][]string{nil, {p, p}, {d}, {p + ".missing"}} {
-		if singlePNGFile(paths) != nil {
+		if clipimage.FilePreview(paths) != nil {
 			t.Fatal(paths)
 		}
 	}
 	if err := os.WriteFile(p, []byte("not a PNG"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if singlePNGFile([]string{p}) != nil {
+	if clipimage.FilePreview([]string{p}) != nil {
 		t.Fatal("invalid PNG selected")
 	}
 }
