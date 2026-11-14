@@ -41,10 +41,12 @@ h1{font-size:20px;margin:0 0 4px;font-weight:650}
 .card>h2{font-size:13px;font-weight:600;color:var(--muted);margin:0;padding:14px 18px 0;letter-spacing:.02em}
 .row{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:14px 18px;border-top:1px solid var(--line)}
 .card>h2+.row,.card>.row:first-child{border-top:0}
-.row .lbl{min-width:0}
+.row .lbl{flex:1 1 0;min-width:200px}
 .row .lbl b{font-weight:600;display:block}
 .row .lbl span{color:var(--muted);font-size:13px;display:block}
-.row .ctl{flex:none;display:flex;align-items:center;gap:10px}
+.row .ctl{flex:0 1 auto;min-width:0;max-width:58%;display:flex;align-items:center;gap:10px}
+.row .ctl select{flex:0 1 auto;min-width:120px;max-width:300px;text-overflow:ellipsis}
+.row .ctl .btn,.row>.btn{flex:none}
 .note{padding:12px 18px;border-top:1px solid var(--line);color:var(--muted);font-size:13px}
 select,input[type=number],input[type=text]{font:inherit;color:var(--text);background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:7px 10px;min-width:150px}
 input[type=text]{min-width:320px;-webkit-user-select:text;user-select:text}
@@ -202,7 +204,7 @@ pre{margin:0;padding:14px 18px;font:12.5px/1.6 Consolas,"Cascadia Mono",Menlo,mo
       </div>
       <div class="card">
         <h2>修饰键对应（PC 键盘 ⇄ Mac）</h2>
-        <div class="row"><div class="lbl"><b>快速方案</b><span id="presetTxt"></span></div><div class="ctl"><button class="btn" id="presetWin">沿用 Windows 习惯</button><button class="btn" id="presetPos">按键位对应</button></div></div>
+        <div class="row"><div class="lbl"><b id="layoutLabel">跨设备操作键位</b><span id="presetTxt" aria-live="polite"></span></div><div class="ctl"><select id="keyLayout" aria-labelledby="layoutLabel" aria-describedby="presetTxt"><option value="mac">Mac 操作键位</option><option value="windows">Windows 操作键位</option><option value="custom" disabled>自定义键位</option></select></div></div>
         <div class="row"><div class="lbl"><b>Ctrl</b></div><div class="ctl"><select data-k="mod_ctrl" class="mod"></select></div></div>
         <div class="row"><div class="lbl"><b>Alt</b></div><div class="ctl"><select data-k="mod_alt" class="mod"></select></div></div>
         <div class="row"><div class="lbl"><b>Win</b></div><div class="ctl"><select data-k="mod_win" class="mod"></select></div></div>
@@ -326,6 +328,14 @@ let cfg = null, state = null, formSig = '';
 function portName(v) { return PORTS[String(v).toLowerCase()] || v; }
 function sharedSig(c) { return String(c.rev) + '|' + c.pairing_key + '|' + (c.peer_host || ''); }
 
+const layouts = {
+  mac: { mod_ctrl: 'control', mod_alt: 'option', mod_win: 'command' },
+  windows: { mod_ctrl: 'command', mod_alt: 'option', mod_win: 'control' }
+};
+function layoutOf(c) {
+  return Object.keys(layouts).find(id => Object.entries(layouts[id]).every(([k,v]) => c[k] === v)) || 'custom';
+}
+
 function fill(c) {
   cfg = c;
   formSig = sharedSig(c);
@@ -339,8 +349,9 @@ function fill(c) {
   });
   $$('[data-val]').forEach(el => el.textContent = Number(c[el.dataset.val]).toFixed(1) + '×');
   $$('[data-hk]').forEach(el => { if (!el.classList.contains('rec')) el.textContent = c[el.dataset.hk]; });
-  const win = c.mod_ctrl === 'command' && c.mod_win === 'control';
-  $('#presetTxt').textContent = win ? '当前：PC 键盘的 Ctrl 相当于 Mac 的 Command，Ctrl+C / Ctrl+V 两边通用' : (c.mod_win === 'command' && c.mod_ctrl === 'control' ? '当前：Win 键相当于 Command，在 Mac 上用 Win+C / Win+V 复制粘贴' : '当前：自定义');
+  const layout = layoutOf(c);
+  $('#keyLayout').value = layout;
+  $('#presetTxt').textContent = layout === 'mac' ? 'PC 键盘控制 Mac：Win 对应 ⌘，用 Win+C 复制。' : layout === 'windows' ? 'PC 键盘控制 Mac：Ctrl 对应 ⌘，用 Ctrl+C 复制。' : '当前使用下方自定义的双向修饰键映射。';
   if (document.activeElement !== $('#peerHost')) $('#peerHost').value = c.peer_host || '';
   renderStatic();
   renderKey();
@@ -372,13 +383,21 @@ async function save(patch) {
 }
 $$('[data-k]').forEach(el => {
   el.addEventListener(el.type === 'range' ? 'input' : 'change', () => {
+    // Keep the bidirectional modifier map one-to-one when manually remapping a key.
+    if (el.classList.contains('mod') && cfg) {
+      const other = $$('select.mod').find(x => x !== el && x.value === el.value);
+      if (other) other.value = cfg[el.dataset.k];
+    }
     if (el.type === 'range') { $('[data-val="' + el.dataset.k + '"]').textContent = Number(el.value).toFixed(1) + '×'; }
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => save(), el.type === 'range' ? 350 : 0);
   });
 });
-$('#presetWin').onclick = () => save({ mod_ctrl: 'command', mod_alt: 'option', mod_win: 'control' });
-$('#presetPos').onclick = () => save({ mod_ctrl: 'control', mod_alt: 'option', mod_win: 'command' });
+$('#keyLayout').onchange = async e => {
+  const el = e.currentTarget;
+  el.disabled = true;
+  try { await save(layouts[el.value]); } finally { el.disabled = false; }
+};
 
 // ---------- 热键录制（按键由后台的输入线程捕获） ----------
 let rec = null;

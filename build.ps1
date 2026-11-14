@@ -1,9 +1,9 @@
-# 编译两端程序到 dist 目录（只需要安装 Go，Mac 端在 Windows 上交叉编译并打包成 .app）
+﻿# 编译两端程序到 dist 目录（只需要安装 Go，Mac 端在 Windows 上交叉编译并打包成 .app）
 param([switch]$Installer)
 $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
 New-Item -ItemType Directory -Force dist | Out-Null
-$version = '1.3.1'
+$version = '1.3.2'
 
 go build -trimpath -ldflags "-H=windowsgui -s -w" -o dist\kvmswitch.exe ./cmd/kvmswitch-win
 if ($LASTEXITCODE -ne 0) { throw "Windows 端编译失败" }
