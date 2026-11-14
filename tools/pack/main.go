@@ -1,7 +1,4 @@
-// pack 把交叉编译出的 Mac 可执行文件打包成 KVMSwitch.app，并压缩为 zip。
-// 之所以用 zip：在 Windows 上无法设置“可执行”权限，而 zip 可以把权限记录在压缩包里，
-// 到 Mac 上双击解压后就是一个能直接运行的应用。
-//
+// pack signs the complete macOS bundle before archiving it with Unix modes.
 // 用法：go run ./tools/pack <Mac 可执行文件> <输出 zip> <版本号>
 package main
 
@@ -9,7 +6,11 @@ import (
 	"archive/zip"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -50,45 +51,106 @@ func main() {
 }
 
 func run(bin, out, version string) error {
-	src, err := os.Open(bin)
+	stage, err := os.MkdirTemp("", "kvmswitch-pack-")
 	if err != nil {
 		return err
 	}
-	defer src.Close()
-	f, err := os.Create(out)
+	defer os.RemoveAll(stage)
+	app := filepath.Join(stage, "KVMSwitch.app")
+	contents := filepath.Join(app, "Contents")
+	if err := os.MkdirAll(filepath.Join(contents, "MacOS"), 0755); err != nil {
+		return err
+	}
+	exe, err := os.ReadFile(bin)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	zw := zip.NewWriter(f)
-	now := time.Now()
+	if err := os.WriteFile(filepath.Join(contents, "MacOS", "kvmswitch-mac"), exe, 0755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(contents, "Info.plist"), []byte(strings.ReplaceAll(infoPlist, "VERSION", version)), 0644); err != nil {
+		return err
+	}
+	if runtime.GOOS == "darwin" {
+		if err := command("/usr/bin/codesign", "--force", "--sign", "-", app); err != nil {
+			return err
+		}
+		if err := command("/usr/bin/codesign", "--verify", "--deep", "--strict", app); err != nil {
+			return err
+		}
+	} else {
+		signer := os.Getenv("RCODESIGN")
+		if signer == "" {
+			signer = "rcodesign"
+		}
+		if err := command(signer, "sign", app); err != nil {
+			return fmt.Errorf("需要 rcodesign 对完整 Mac 应用签名（可设置 RCODESIGN 路径）: %w", err)
+		}
+	}
+	if info, err := os.Stat(filepath.Join(contents, "_CodeSignature", "CodeResources")); err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
+		return fmt.Errorf("签名未生成 CodeResources")
+	}
+	f, err := os.CreateTemp(filepath.Dir(out), ".kvmswitch-*.zip")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	err = archive(f, stage, app)
+	closeErr := f.Close()
+	if err != nil {
+		return err
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	return os.Rename(f.Name(), out)
+}
 
-	dir := func(name string) error {
-		h := &zip.FileHeader{Name: name, Modified: now}
-		h.SetMode(os.ModeDir | 0o755)
-		_, err := zw.CreateHeader(h)
-		return err
-	}
-	file := func(name string, mode os.FileMode, r io.Reader) error {
-		h := &zip.FileHeader{Name: name, Method: zip.Deflate, Modified: now}
-		h.SetMode(mode)
+func command(name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func archive(f io.Writer, stage, app string) error {
+	zw := zip.NewWriter(f)
+	err := filepath.WalkDir(app, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(stage, path)
+		if err != nil {
+			return err
+		}
+		h := &zip.FileHeader{Name: filepath.ToSlash(rel), Method: zip.Deflate, Modified: time.Now()}
+		if d.IsDir() {
+			h.Name += "/"
+			h.SetMode(os.ModeDir | 0755)
+			_, err := zw.CreateHeader(h)
+			return err
+		}
+		if !d.Type().IsRegular() {
+			return fmt.Errorf("unexpected bundle entry: %s", rel)
+		}
+		if h.Name == "KVMSwitch.app/Contents/MacOS/kvmswitch-mac" {
+			h.SetMode(0755)
+		} else {
+			h.SetMode(0644)
+		}
 		w, err := zw.CreateHeader(h)
 		if err != nil {
 			return err
 		}
-		_, err = io.Copy(w, r)
-		return err
-	}
-	for _, d := range []string{"KVMSwitch.app/", "KVMSwitch.app/Contents/", "KVMSwitch.app/Contents/MacOS/"} {
-		if err := dir(d); err != nil {
+		src, err := os.Open(path)
+		if err != nil {
 			return err
 		}
-	}
-	plist := strings.ReplaceAll(infoPlist, "VERSION", version)
-	if err := file("KVMSwitch.app/Contents/Info.plist", 0o644, strings.NewReader(plist)); err != nil {
+		defer src.Close()
+		_, err = io.Copy(w, src)
 		return err
-	}
-	if err := file("KVMSwitch.app/Contents/MacOS/kvmswitch-mac", 0o755, src); err != nil {
+	})
+	if err != nil {
 		return err
 	}
 	return zw.Close()

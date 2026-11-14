@@ -2,6 +2,7 @@ package update
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -40,6 +41,10 @@ func launch(pkg string) (err error) {
 	st, e := os.Lstat(bin)
 	if e != nil || !st.Mode().IsRegular() || st.Mode()&0111 == 0 {
 		return errors.New("更新包没有可执行的 Mac 应用")
+	}
+	// Check the extracted bundle before quitting or touching the installed copy.
+	if msg, e := exec.Command("/usr/bin/codesign", "--verify", "--deep", "--strict", filepath.Join(stage, "KVMSwitch.app")).CombinedOutput(); e != nil {
+		return fmt.Errorf("更新包签名完整性检查失败，已保留当前版本：%w %s", e, strings.TrimSpace(string(msg)))
 	}
 	script := `set -eu
 pid=$1; app=$2; stage=$3

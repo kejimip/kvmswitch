@@ -32,11 +32,13 @@ Mac 建议走 USB-C/雷雳口而不是自带的 HDMI 口：部分 Mac 的 HDMI �
 **Mac**：
 
 1. 把 `KVMSwitch-mac.zip` 拷到 Mac 上，双击解压，把 `KVMSwitch.app` 拖进“应用程序”文件夹。
-2. 双击打开。如果提示“无法打开”或“已损坏”，在“终端”执行一次：
+2. 双击打开。如果提示“已损坏”，先在终端检查完整性：
 
    ```bash
-   xattr -cr /Applications/KVMSwitch.app
+   codesign --verify --deep --strict --verbose=2 /Applications/KVMSwitch.app
    ```
+
+   如果报告资源缺失或签名无效，请更换为已修复的包；拖到“应用程序”、改用 DMG 或清除下载标记都不能修复签名。若校验通过但提示无法验证开发者，这是另一项检查：本地构建使用临时签名（ad hoc），不包含 Developer ID 和 Apple 公证。只在确认来源可信时使用 macOS 为单个应用提供的“仍要打开”选项。
 
 3. 按提示授权：**系统设置 › 隐私与安全性 › 辅助功能**里打开 KVMSwitch；弹出“查找本地网络上的设备”时选**允许**。
 4. 建议在 Mac 上开启自动登录（登录界面无法被另一台设备的键鼠控制）。
@@ -122,7 +124,7 @@ Windows 使用 MSI 安装向导，完成后从开始菜单重新打开；便携�
 
 ## 九、从源码编译
 
-只需要安装 Go，在 Windows 上执行 `.\build.ps1` 即可同时得到两端程序。生成 MSI 另需 WiX 3.x：将工具目录设为 `WIX_BIN`，执行 `.\build.ps1 -Installer`。Windows 可在系统“已安装的应用”卸载，用户配置保留。若更换应用图标，从项目根目录运行 `go run github.com/akavel/rsrc@v0.10.2 -arch amd64 -ico packaging/KVMSwitch.ico -o cmd/kvmswitch-win/icon_windows_amd64.syso` 后重新编译。运行测试：`go test ./...`
+在 Windows 上安装 Go 和 [rcodesign](https://github.com/indygreg/apple-platform-rs/releases/tag/apple-codesign/0.29.0)（已测试 0.29.0；将可执行文件加入 PATH，或用环境变量 `RCODESIGN` 指定完整路径），执行 `.\build.ps1` 即可同时得到两端程序。生成 MSI 另需 WiX 3.x：将工具目录设为 `WIX_BIN`，执行 `.\build.ps1 -Installer`。Windows 可在系统“已安装的应用”卸载，用户配置保留。若更换应用图标，从项目根目录运行 `go run github.com/akavel/rsrc@v0.10.2 -arch amd64 -ico packaging/KVMSwitch.ico -o cmd/kvmswitch-win/icon_windows_amd64.syso` 后重新编译。运行测试：`go test ./...`
 
 | 目录 | 内容 |
 |---|---|

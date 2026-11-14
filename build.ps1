@@ -1,4 +1,4 @@
-﻿# 编译两端程序到 dist 目录（只需要安装 Go，Mac 端在 Windows 上交叉编译并打包成 .app）
+﻿# 编译两端程序到 dist 目录（需要 Go 和 rcodesign，Mac 端在 Windows 上交叉编译并打包成 .app）
 param([switch]$Installer)
 $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
