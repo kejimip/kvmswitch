@@ -3,6 +3,13 @@
 <Product Name="KVMSwitch" Id="*" Manufacturer="KVMSwitch" Language="1033" Version="$(var.Version)" UpgradeCode="B7CF82E2-CA97-429C-8EDB-4C25DC4273DD">
  <Package InstallerVersion="500" Compressed="yes" InstallScope="perUser"/>
  <MajorUpgrade DowngradeErrorMessage="A newer version is already installed."/>
+ <!-- The MSI owns relaunch so upgrades from older updaters also work. The
+      post-ExecuteAction step runs in the interactive client after success.
+      Cancellation or failure skips subsequent steps; no launch for uninstall or silent/basic UI. -->
+ <CustomAction Id="OpenInstalledKVM" FileKey="KVMExe" ExeCommand="--restart" Execute="immediate" Return="asyncNoWait"/>
+ <InstallUISequence>
+  <Custom Action="OpenInstalledKVM" After="ExecuteAction">UILevel &gt;= 4 AND NOT (REMOVE~="ALL") AND NOT UPGRADINGPRODUCTCODE AND NOT (ACTION="ADMIN")</Custom>
+ </InstallUISequence>
  <MediaTemplate EmbedCab="yes"/>
  <Icon Id="AppIcon.ico" SourceFile="packaging/KVMSwitch.ico"/><Property Id="ARPPRODUCTICON" Value="AppIcon.ico"/>
  <Directory Id="TARGETDIR" Name="SourceDir">

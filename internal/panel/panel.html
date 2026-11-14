@@ -459,7 +459,7 @@ let confirmedTag='';
 $('#installUpdate').onclick=()=>{
   const u=state?.update;if(!u?.Ready || u.Busy)return;
   confirmedTag=u.Latest;
-  $('#updateWarning').textContent='安装 '+confirmedTag+' 将退出程序并中断键鼠和传输。请先把键鼠切回本机并保存工作。'+(state.self_os==='windows'?'Windows 将打开 MSI 安装向导，完成后从开始菜单启动。':'Mac 将替换当前应用并重新打开。');
+  $('#updateWarning').textContent='安装 '+confirmedTag+' 将退出程序并中断键鼠和传输。请先把键鼠切回本机并保存工作。'+(state.self_os==='windows'?'Windows 将打开 MSI 安装向导，安装成功后自动启动；取消或安装失败不会启动。':'Mac 将替换当前应用并重新打开。');
   $('#updateConfirm').hidden=false;
 };
 $('#updateNo').onclick=()=>{$('#updateConfirm').hidden=true;confirmedTag=''};

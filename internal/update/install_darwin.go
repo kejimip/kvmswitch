@@ -1,6 +1,7 @@
 package update
 
 import (
+	_ "embed"
 	"errors"
 	"fmt"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 // Stage on the target volume first. Only exit the running app after extraction
@@ -46,19 +48,22 @@ func launch(pkg string) (err error) {
 	if msg, e := exec.Command("/usr/bin/codesign", "--verify", "--deep", "--strict", filepath.Join(stage, "KVMSwitch.app")).CombinedOutput(); e != nil {
 		return fmt.Errorf("更新包签名完整性检查失败，已保留当前版本：%w %s", e, strings.TrimSpace(string(msg)))
 	}
-	script := `set -eu
-pid=$1; app=$2; stage=$3
-for i in {1..300}; do ! kill -0 "$pid" 2>/dev/null && break; sleep 0.1; done
-if kill -0 "$pid" 2>/dev/null; then exit 1; fi
-/bin/mv "$app" "$stage/previous.app"
-if ! /bin/mv "$stage/KVMSwitch.app" "$app"; then /bin/mv "$stage/previous.app" "$app"; exit 1; fi
-if ! /usr/bin/open "$app"; then
- /bin/mv "$app" "$stage/failed.app"
- /bin/mv "$stage/previous.app" "$app"
- /usr/bin/open "$app"; exit 1
-fi
-/bin/rm -rf "$stage"
-/bin/rm -f "$4"
-`
-	return exec.Command("/bin/bash", "-c", script, "kvm-update", strconv.Itoa(os.Getpid()), app, stage, pkg).Start()
+	// Do not tie the installer to the terminal/session of the app being replaced.
+	logDir, e := os.UserHomeDir()
+	if e != nil {
+		return e
+	}
+	logFile, e := os.OpenFile(filepath.Join(logDir, "Library", "Logs", "KVMSwitch-update.log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	if e != nil {
+		return e
+	}
+	defer logFile.Close()
+	cmd := exec.Command("/bin/bash", "-c", macInstallScript, "kvm-update", strconv.Itoa(os.Getpid()), app, stage, pkg)
+	cmd.Stdout, cmd.Stderr = logFile, logFile
+	cmd.Dir = stage
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	return cmd.Start()
 }
+
+//go:embed install_mac.sh
+var macInstallScript string
