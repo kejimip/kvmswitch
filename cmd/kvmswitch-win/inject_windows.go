@@ -35,6 +35,7 @@ type mouseInput struct {
 }
 
 const (
+	kvmKeyTag         = 0x4B564D53 // "KVMS" in KEYBDINPUT.dwExtraInfo
 	keyeventfExtended = 0x1
 	keyeventfKeyUp    = 0x2
 
@@ -44,7 +45,7 @@ const (
 )
 
 func sendKey(vk, scan uint16, up, extended bool) {
-	in := keyInput{Type: 1, Vk: vk, Scan: scan}
+	in := keyInput{Type: 1, Vk: vk, Scan: scan, Extra: kvmKeyTag}
 	if up {
 		in.Flags |= keyeventfKeyUp
 	}

@@ -12,7 +12,7 @@ import (
 
 // 低级键盘/鼠标钩子：负责识别热键，并在“转发”状态下吞掉本机的物理输入、交给核心发往另一台设备。
 // 钩子回调运行在 UI 线程上，必须尽快返回，所以只做判断和入队。
-// 由 SendInput 注入的事件（包括另一台设备控制本机时注入的）一律放行，不参与热键判断，也不会被转发。
+// 本程序注入的键始终放行。驱动合成的音量键单独处理，不参与热键判断。
 
 type kbdllhook struct {
 	VkCode, ScanCode, Flags, Time uint32
@@ -96,10 +96,36 @@ func collapseMods(m uint32) uint32 {
 	return r
 }
 
+// Only opt external synthetic volume controls into the media path; never
+// treat injected text, modifiers or shortcuts as physical keyboard input.
+func driverVolume(k *kbdllhook) bool {
+	return k.Flags&llkhfInjected != 0 && k.ExtraInfo != kvmKeyTag && k.VkCode >= 0xAD && k.VkCode <= 0xAF
+}
+
+func forwardKey(k *kbdllhook) {
+	var f byte
+	if k.Flags&llkhfUp == 0 {
+		f |= proto.KeyFlagDown
+	}
+	if k.Flags&llkhfExtended != 0 {
+		f |= proto.KeyFlagExtended
+	}
+	theCore.PushInput(core.InputEvent{Typ: proto.MsgKey, A: int32(k.VkCode), B: int32(k.ScanCode), C: f})
+}
+
 func kbdProc(nCode, wParam, lParam uintptr) uintptr {
 	if int32(nCode) == 0 {
 		k := (*kbdllhook)(unsafe.Pointer(lParam))
 		vk := k.VkCode
+		if driverVolume(k) {
+			if forward.Load() {
+				forwardKey(k)
+				return 1
+			}
+			if k.Flags&llkhfUp == 0 {
+				theCore.LocalMedia(uint16(vk))
+			}
+		}
 		if k.Flags&llkhfInjected == 0 && vk < 256 {
 			up := k.Flags&llkhfUp != 0
 			bit := modBit(vk)
@@ -142,14 +168,7 @@ func kbdProc(nCode, wParam, lParam uintptr) uintptr {
 				return 1
 			}
 			if forward.Load() {
-				var f byte
-				if !up {
-					f |= proto.KeyFlagDown
-				}
-				if k.Flags&llkhfExtended != 0 {
-					f |= proto.KeyFlagExtended
-				}
-				theCore.PushInput(core.InputEvent{Typ: proto.MsgKey, A: int32(vk), B: int32(k.ScanCode), C: f})
+				forwardKey(k)
 				return 1
 			}
 		}

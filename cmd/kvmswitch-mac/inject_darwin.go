@@ -98,7 +98,7 @@ const (
 
 type injector struct {
 	swallowPaste bool
-	mediaHeld    map[uint16]bool
+	mediaHeld    mediaPresses
 	fetch        func() bool
 	mu           sync.Mutex
 	src          uintptr
@@ -128,7 +128,7 @@ type injector struct {
 }
 
 func newInjector() *injector {
-	return &injector{mediaHeld: map[uint16]bool{},
+	return &injector{mediaHeld: mediaPresses{},
 		src:     cgEventSourceCreate(1), // kCGEventSourceStateHIDSystemState
 		modHeld: remoteModifiers{},
 		held:    map[uint16]bool{},
@@ -220,10 +220,7 @@ func (in *injector) leave() {
 	if !in.active {
 		return
 	}
-	for nx := range in.mediaHeld {
-		postMedia(nx, false, false)
-		delete(in.mediaHeld, nx)
-	}
+	in.mediaHeld.release(postMedia)
 	for code := range in.held {
 		ev := cgEventCreateKeyboardEvent(in.src, code, false)
 		in.applyKeyFlags(ev, code)
@@ -256,12 +253,7 @@ func (in *injector) key(vk uint16, flags byte) bool {
 	}
 	down := flags&proto.KeyFlagDown != 0
 	if nx, media := mediaKeys[vk]; media {
-		postMedia(nx, down, in.mediaHeld[nx] && down)
-		if down {
-			in.mediaHeld[nx] = true
-		} else {
-			delete(in.mediaHeld, nx)
-		}
+		in.mediaHeld.key(nx, down, adjustOutputVolume, postMedia)
 		return false
 	}
 	code, ok := mapKey(vk, flags&proto.KeyFlagExtended != 0, in.mods)

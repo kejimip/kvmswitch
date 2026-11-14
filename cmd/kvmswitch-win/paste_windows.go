@@ -32,7 +32,7 @@ func (p *winPlatform) PasteNow(app, focus uintptr) bool {
 	}
 	keys := make([]keyInput, 0, 4)
 	add := func(vk uint16, flags uint32) {
-		keys = append(keys, keyInput{Type: 1, Vk: vk, Scan: scanOf(vk), Flags: flags})
+		keys = append(keys, keyInput{Type: 1, Vk: vk, Scan: scanOf(vk), Flags: flags, Extra: kvmKeyTag})
 	}
 	ctrl := held(0x11)
 	if !ctrl {
