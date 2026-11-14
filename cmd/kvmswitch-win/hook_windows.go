@@ -113,6 +113,9 @@ func kbdProc(nCode, wParam, lParam uintptr) uintptr {
 				physMods.Store(m)
 			}
 			if !up {
+				if swallowed[vk] {
+					return 1 // 热键按住不放产生的重复
+				}
 				if !forward.Load() {
 					theCore.LocalMedia(uint16(vk))
 				}
@@ -120,9 +123,6 @@ func kbdProc(nCode, wParam, lParam uintptr) uintptr {
 				if !forward.Load() && vk == 0x56 && collapseMods(physMods.Load()) == core.ModCtrl && theCore.RequestPaste() {
 					swallowed[vk] = true
 					return 1
-				}
-				if swallowed[vk] {
-					return 1 // 热键按住不放产生的重复
 				}
 				switch theCore.Keys.OnKeyDown(vk, collapseMods(physMods.Load()), bit != 0) {
 				case core.KeySwallow:

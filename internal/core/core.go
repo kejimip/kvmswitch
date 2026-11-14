@@ -880,6 +880,7 @@ func (c *Core) runControl(pc *proto.Conn) {
 		c.refresh()
 		log.Printf("已连接: %v", pc.RemoteAddr())
 	})
+	var pasteVDown bool // A held V produces repeated key-downs, not new paste requests.
 	for {
 		pc.SetReadDeadline(time.Now().Add(8 * time.Second))
 		t, p, err := pc.Read()
@@ -903,6 +904,7 @@ func (c *Core) runControl(pc *proto.Conn) {
 				c.do(func() { c.onPeerConfig(s) })
 			}
 		case proto.MsgActive:
+			pasteVDown = false
 			var m proto.Active
 			if json.Unmarshal(p, &m) == nil {
 				c.do(func() {
@@ -927,6 +929,7 @@ func (c *Core) runControl(pc *proto.Conn) {
 				c.media.mark(binary.BigEndian.Uint64(p), true)
 			}
 		case proto.MsgInputReset:
+			pasteVDown = false
 			done := make(chan struct{})
 			c.do(func() {
 				if c.ctrl == pc && c.active == ActiveSelf {
@@ -1001,10 +1004,14 @@ func (c *Core) runControl(pc *proto.Conn) {
 			})
 		case proto.MsgKey:
 			if len(p) >= 5 && c.activeA.Load() == 1 {
-				if p[4]&proto.KeyFlagDown != 0 {
+				vk, down := binary.BigEndian.Uint16(p), p[4]&proto.KeyFlagDown != 0
+				if down && !(vk == 0x56 && pasteVDown) {
 					c.Interacted()
 				}
-				c.P.InjectKey(binary.BigEndian.Uint16(p), p[4])
+				if vk == 0x56 {
+					pasteVDown = down
+				}
+				c.P.InjectKey(vk, p[4])
 				if len(p) == 13 && mediaName(binary.BigEndian.Uint16(p)) != "" {
 					pc.Write(proto.MsgMediaAck, p[5:])
 				}
@@ -1184,13 +1191,24 @@ func (c *Core) runData(pc *proto.Conn) {
 				return
 			}
 			log.Printf("收到剪贴板: %s，%s", h.Kind, xfer.HumanSize(h.Total))
-			auto := false
-			if host, ok := c.P.(pasteHost); ok && !h.Cut && q.app != 0 && q.focus != 0 && q.epoch == c.activity.Load() && c.P.ClipChange() == chg && c.active == ActiveSelf {
-				auto = host.PasteNow(q.app, q.focus)
+			reason := ""
+			host, native := c.P.(pasteHost)
+			switch {
+			case !native || q.app == 0 || q.focus == 0:
+				reason = "未记录粘贴目标"
+			case h.Cut || c.active != ActiveSelf:
+				reason = "目标状态已改变"
+			case q.epoch != c.activity.Load():
+				reason = "传输期间有新的输入"
+			case c.P.ClipChange() != chg:
+				reason = "写入后剪贴板又发生变化"
+			case !host.PasteNow(q.app, q.focus):
+				reason = "目标焦点已改变或系统未接受快捷键"
 			}
-			if auto {
+			if reason == "" {
 				c.transfer.Store(&Transfer{Status: "已发送粘贴快捷键", Done: h.Total, Total: h.Total})
 			} else {
+				log.Printf("未自动粘贴：%s", reason)
 				c.transfer.Store(&Transfer{Status: "已就绪，请在目标位置粘贴", Done: h.Total, Total: h.Total})
 				c.P.Notify("剪贴板已就绪", "请在目标位置再次粘贴。")
 			}

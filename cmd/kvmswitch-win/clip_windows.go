@@ -213,7 +213,7 @@ func setData(f uintptr, data []byte) error {
 }
 
 // writeClipboard 把收到的内容写入本机剪贴板，返回写入后的序列号。
-func writeClipboard(kind string, data []byte, paths []string) (uint32, error) {
+func writeClipboard(kind string, data []byte, paths []string) (seq uint32, err error) {
 	var filePNG, fileDIB []byte
 	if kind == xfer.KindFiles {
 		filePNG = clipimage.FilePreview(paths)
@@ -226,11 +226,27 @@ func writeClipboard(kind string, data []byte, paths []string) (uint32, error) {
 	if hwndMain == 0 || !openClipboard(hwndMain) {
 		return 0, errors.New("无法打开剪贴板")
 	}
-	defer pCloseClipboard.Call()
+	// CloseClipboard publishes synthesized formats (e.g. CF_BITMAP for CF_DIB),
+	// which can advance the sequence number even though no other app copied.
+	defer func() {
+		r, _, _ := pCloseClipboard.Call()
+		if err != nil {
+			return
+		}
+		if r == 0 {
+			err = errors.New("无法完成剪贴板写入")
+			return
+		}
+		seq = clipboardSeq()
+		owner, _, _ := pGetClipboardOwner.Call()
+		if seq == 0 || owner != hwndMain {
+			err = errors.New("剪贴板已被其他应用更改")
+			seq = 0
+		}
+	}()
 	if r, _, _ := pEmptyClipboard.Call(); r == 0 {
 		return 0, errors.New("无法清空剪贴板")
 	}
-	var err error
 	switch kind {
 	case xfer.KindText:
 		s := strings.ReplaceAll(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n", "\r\n")
@@ -277,7 +293,7 @@ func writeClipboard(kind string, data []byte, paths []string) (uint32, error) {
 	default:
 		err = errors.New("未知的剪贴板类型")
 	}
-	return clipboardSeq(), err
+	return 0, err
 }
 
 // dibToPNG 把 CF_DIB（BITMAPINFOHEADER + 像素）转成 PNG，支持 24/32 位。

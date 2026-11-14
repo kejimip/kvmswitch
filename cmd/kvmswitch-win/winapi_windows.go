@@ -45,6 +45,7 @@ var (
 	pSetClipboardData        = user32.NewProc("SetClipboardData")
 	pIsClipboardFormatAvail  = user32.NewProc("IsClipboardFormatAvailable")
 	pRegisterClipboardFormat = user32.NewProc("RegisterClipboardFormatW")
+	pGetClipboardOwner       = user32.NewProc("GetClipboardOwner")
 	pGetClipboardSeq         = user32.NewProc("GetClipboardSequenceNumber")
 	pSetProcessDpiCtx        = user32.NewProc("SetProcessDpiAwarenessContext")
 	pMapVirtualKeyW          = user32.NewProc("MapVirtualKeyW")

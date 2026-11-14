@@ -162,7 +162,7 @@ func (t *tap) callback(proxy uintptr, typ uint32, ev uintptr, info uintptr) uint
 		return ev // 我们自己注入的事件
 	}
 	switch typ {
-	case evKeyDown, evLeftDown, evRightDown, evOtherDown, evScrollWheel:
+	case evLeftDown, evRightDown, evOtherDown, evScrollWheel:
 		t.c.Interacted()
 	}
 	fwd := t.forward.Load()
@@ -197,6 +197,7 @@ func (t *tap) callback(proxy uintptr, typ uint32, ev uintptr, info uintptr) uint
 			if t.swallowed[code] {
 				return 0 // 热键按住不放产生的重复
 			}
+			t.c.Interacted()
 			repeat := cgEventGetIntegerValueField(ev, fieldAutorepeat) != 0
 			if ok && !repeat {
 				switch t.c.Keys.OnKeyDown(uint32(vk), t.hotkeyMods(), false) {

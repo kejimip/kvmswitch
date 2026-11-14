@@ -747,6 +747,55 @@ func TestDeferredPasteFocusAndClipboard(t *testing.T) {
 	}
 }
 
+// A physical keyboard attached to the sender can emit more V-downs before
+// key-up. The receiver swallows them: they must not invalidate the paste ticket.
+func TestForwardedHeldPasteOnce(t *testing.T) {
+	r := newRig(t, true)
+	r.connected()
+	reading, resume := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	defer once.Do(func() { close(resume) })
+	r.fw.copyText("one paste")
+	r.fw.get(func() { r.fw.beforeRead = func() { close(reading); <-resume } })
+	r.fm.get(func() { r.fm.app = 1; r.fm.focus = 2 })
+	r.win.Hotkey(false)
+	r.active(ActivePeer, ActiveSelf)
+	r.wait("offer", func() bool { return r.mac.pending.Load() != nil })
+	key := InputEvent{Typ: proto.MsgKey, A: 0x56, C: proto.KeyFlagDown}
+	r.win.PushInput(key)
+	vCount := func() int {
+		n := 0
+		r.fm.get(func() {
+			for _, v := range r.fm.keys {
+				if v == 0x56 {
+					n++
+				}
+			}
+		})
+		return n
+	}
+	r.wait("first V", func() bool { return vCount() == 1 })
+	if !r.mac.RequestPaste() {
+		t.Fatal("not deferred")
+	}
+	select {
+	case <-reading:
+	case <-time.After(3 * time.Second):
+		t.Fatal("no fetch")
+	}
+	r.win.PushInput(key)
+	key.C = 0
+	r.win.PushInput(key)
+	r.wait("repeat and release", func() bool { return vCount() == 3 })
+	once.Do(func() { close(resume) })
+	r.wait("paste completed", func() bool { return r.mac.pending.Load() == nil })
+	r.fm.get(func() {
+		if r.fm.pasted != 1 || len(r.fm.written) != 1 {
+			t.Fatalf("pasted=%d written=%d", r.fm.pasted, len(r.fm.written))
+		}
+	})
+}
+
 func TestQueueControlReleaseUnderMotion(t *testing.T) {
 	q := newInputQueue()
 	q.push(InputEvent{Typ: proto.MsgKey, A: 0xa2, C: proto.KeyFlagDown})

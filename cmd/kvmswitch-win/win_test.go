@@ -7,6 +7,11 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"kvmswitch/internal/xfer"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"testing"
 	"unsafe"
 
@@ -102,6 +107,47 @@ func TestRegisteredPNGFormats(t *testing.T) {
 		})
 		if !ok || !bytes.Equal(got, pngBytes.Bytes()) {
 			t.Fatal("PNG lost", f)
+		}
+	}
+}
+
+// Use a child process with a private Win32 window station: this exercises the
+// real clipboard without clearing the developer's interactive clipboard.
+func TestClipboardCommitSequence(t *testing.T) {
+	const child = "KVM_TEST_PRIVATE_CLIPBOARD"
+	if os.Getenv(child) != "1" {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestClipboardCommitSequence$", "-test.v")
+		cmd.Env = append(os.Environ(), child+"=1")
+		if b, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%v: %s", err, b)
+		}
+		return
+	}
+	runtime.LockOSThread()
+	must := func(v uintptr, _ uintptr, err error) uintptr {
+		t.Helper()
+		if v == 0 {
+			t.Fatal(err)
+		}
+		return v
+	}
+	station := must(user32.NewProc("CreateWindowStationW").Call(0, 0, 0xf037f, 0))
+	must(user32.NewProc("SetProcessWindowStation").Call(station))
+	desktop := must(user32.NewProc("CreateDesktopW").Call(uintptr(unsafe.Pointer(u16("KVMTest"))), 0, 0, 0, 0xf01ff, 0))
+	must(user32.NewProc("SetThreadDesktop").Call(desktop))
+	hwndMain = must(pCreateWindowExW.Call(0, uintptr(unsafe.Pointer(u16("STATIC"))), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, image.NewRGBA(image.Rect(0, 0, 2, 2))); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "test.png")
+	if err := os.WriteFile(path, buf.Bytes(), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []xfer.Clip{{Kind: xfer.KindText, Data: []byte("test")}, {Kind: xfer.KindImage, Data: buf.Bytes()}, {Kind: xfer.KindFiles, Paths: []string{path}}} {
+		seq, err := writeClipboard(c.Kind, c.Data, c.Paths)
+		if got := clipboardSeq(); err != nil || seq == 0 || got != seq {
+			t.Fatalf("%s: write=%d published=%d err=%v", c.Kind, seq, got, err)
 		}
 	}
 }
