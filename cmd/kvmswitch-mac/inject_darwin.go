@@ -114,7 +114,7 @@ type injector struct {
 
 	flags   uint64
 	caps    bool
-	modHeld map[uint16]uint64
+	modHeld remoteModifiers
 	held    map[uint16]bool
 	buttons [5]bool
 
@@ -130,7 +130,7 @@ type injector struct {
 func newInjector() *injector {
 	return &injector{mediaHeld: map[uint16]bool{},
 		src:     cgEventSourceCreate(1), // kCGEventSourceStateHIDSystemState
-		modHeld: map[uint16]uint64{},
+		modHeld: remoteModifiers{},
 		held:    map[uint16]bool{},
 		mods:    defaultMods, mouseScale: 1, scrollScale: 1,
 	}
@@ -152,20 +152,14 @@ func (in *injector) post(ev uintptr) {
 	cfRelease(ev)
 }
 
-func (in *injector) applyFlags(ev uintptr) {
-	cgEventSetFlags(ev, cgEventGetFlags(ev)&^modMask|in.flags)
+func (in *injector) applyKeyFlags(ev uintptr, code uint16) {
+	cgEventSetFlags(ev, remoteKeyFlags(code, in.flags))
 }
-
-func (in *injector) recomputeFlags() {
-	var f uint64
-	for _, v := range in.modHeld {
-		f |= v
-	}
-	if in.caps {
-		f |= flagCaps
-	}
-	in.flags = f
+func (in *injector) applyPointerFlags(ev uintptr) {
+	const nonCoalesced = 0x100
+	cgEventSetFlags(ev, cgEventGetFlags(ev)&nonCoalesced|in.flags)
 }
+func (in *injector) recomputeFlags() { in.flags = in.modHeld.flags(in.caps) }
 
 // enter 开始接受输入。
 func (in *injector) enter() {
@@ -200,7 +194,7 @@ func (in *injector) releaseModifiers() {
 			continue
 		}
 		cgEventSetType(ev, evFlagsChanged)
-		cgEventSetFlags(ev, cgEventGetFlags(ev)&^(modMask&^flagCaps))
+		cgEventSetFlags(ev, cgEventGetFlags(ev)&flagCaps)
 		in.post(ev)
 	}
 }
@@ -232,16 +226,16 @@ func (in *injector) leave() {
 	}
 	for code := range in.held {
 		ev := cgEventCreateKeyboardEvent(in.src, code, false)
-		in.applyFlags(ev)
+		in.applyKeyFlags(ev, code)
 		in.post(ev)
 	}
 	in.held = map[uint16]bool{}
-	for code := range in.modHeld {
-		delete(in.modHeld, code)
+	for vk, code := range in.modHeld {
+		delete(in.modHeld, vk)
 		in.recomputeFlags()
 		ev := cgEventCreateKeyboardEvent(in.src, code, false)
 		cgEventSetType(ev, evFlagsChanged)
-		in.applyFlags(ev)
+		in.applyKeyFlags(ev, code)
 		in.post(ev)
 	}
 	for b, down := range in.buttons {
@@ -287,16 +281,16 @@ func (in *injector) key(vk uint16, flags byte) bool {
 		}
 		return false
 	}
-	if mf := modFlagOf(code); mf != 0 {
-		if down {
-			in.modHeld[code] = mf
-		} else {
-			delete(in.modHeld, code)
+	if modFlagOf(code) != 0 {
+		var changed bool
+		code, changed = in.modHeld.update(vk, code, down)
+		if !changed {
+			return false
 		}
 		in.recomputeFlags()
 		ev := cgEventCreateKeyboardEvent(in.src, code, down)
 		cgEventSetType(ev, evFlagsChanged)
-		in.applyFlags(ev)
+		in.applyKeyFlags(ev, code)
 		in.post(ev)
 		return false
 	}
@@ -312,7 +306,7 @@ func (in *injector) key(vk uint16, flags byte) bool {
 		return false
 	}
 	ev := cgEventCreateKeyboardEvent(in.src, code, down)
-	in.applyFlags(ev)
+	in.applyKeyFlags(ev, code)
 	if repeat {
 		cgEventSetIntegerValueField(ev, fieldAutorepeat, 1)
 	}
@@ -356,7 +350,7 @@ func (in *injector) moveLocked(dx, dy int32) {
 	}
 	cgEventSetIntegerValueField(ev, fieldDeltaX, int64(math.Round(sx)))
 	cgEventSetIntegerValueField(ev, fieldDeltaY, int64(math.Round(sy)))
-	in.applyFlags(ev)
+	in.applyPointerFlags(ev)
 	in.post(ev)
 }
 
@@ -404,7 +398,7 @@ func (in *injector) buttonLocked(b int, down bool) {
 		return
 	}
 	cgEventSetIntegerValueField(ev, fieldClickState, in.clickCount)
-	in.applyFlags(ev)
+	in.applyPointerFlags(ev)
 	in.post(ev)
 }
 
@@ -431,7 +425,7 @@ func (in *injector) wheel(dy, dx int32) {
 	if ev == 0 {
 		return
 	}
-	in.applyFlags(ev)
+	in.applyPointerFlags(ev)
 	in.post(ev)
 }
 

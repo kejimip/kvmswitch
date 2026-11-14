@@ -5,12 +5,13 @@ package main
 //   采集时：macOS 键码 -> VK
 
 const (
-	flagCaps    = 0x10000
-	flagShift   = 0x20000
-	flagControl = 0x40000
-	flagOption  = 0x80000
-	flagCommand = 0x100000
-	modMask     = flagCaps | flagShift | flagControl | flagOption | flagCommand
+	flagCaps       = 0x10000
+	flagShift      = 0x20000
+	flagControl    = 0x40000
+	flagOption     = 0x80000
+	flagCommand    = 0x100000
+	flagNumericPad = 0x200000
+	flagHelp       = 0x400000
 
 	kcV        = 9
 	kcCapsLock = 57
@@ -203,4 +204,45 @@ func decodeMedia(data uint32) (uint16, bool, bool) {
 		}
 	}
 	return 0, false, false
+}
+
+// Remote keyboard events never inherit modifiers from the local HID keyboard.
+// Only keypad/navigation classification belongs to the mapped key itself.
+func remoteKeyFlags(code uint16, held uint64) uint64 {
+	switch code {
+	case 65, 67, 69, 71, 75, 76, 78, 81, 82, 83, 84, 85, 86, 87, 88, 89, 91, 92, 123, 124, 125, 126:
+		return held | flagNumericPad
+	case 114:
+		return held | flagHelp
+	default:
+		return held
+	}
+}
+
+// Keep the down-time target until key-up (the user may change the layout
+// while holding a key). Track both sides, even when they map to one family.
+type remoteModifiers map[uint16]uint16 // wire VK -> Mac keycode
+func (m remoteModifiers) update(vk, code uint16, down bool) (uint16, bool) {
+	if old, ok := m[vk]; ok {
+		if down {
+			return old, false
+		}
+		delete(m, vk)
+		return old, true
+	}
+	if !down {
+		return code, false
+	} // e.g. release of the switch hotkey's Ctrl
+	m[vk] = code
+	return code, true
+}
+func (m remoteModifiers) flags(caps bool) uint64 {
+	var f uint64
+	for _, code := range m {
+		f |= modFlagOf(code) | deviceModBit[code]
+	}
+	if caps {
+		f |= flagCaps
+	}
+	return f
 }

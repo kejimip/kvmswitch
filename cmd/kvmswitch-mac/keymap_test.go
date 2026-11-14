@@ -6,6 +6,9 @@ var allMods = []modMap{
 	{"control", "option", "command"}, // 按键位对应
 	{"command", "option", "control"}, // 沿用 Windows 习惯
 	{"option", "command", "control"},
+	{"option", "control", "command"},
+	{"command", "control", "option"},
+	{"control", "command", "option"},
 }
 
 // 被控方向（VK -> Mac）和采集方向（Mac -> VK）必须互为逆运算，
@@ -116,5 +119,57 @@ func TestMediaKeyRoundTrip(t *testing.T) {
 	}
 	if _, _, ok := decodeMedia(0xffff0a00); ok {
 		t.Fatal("unknown media key")
+	}
+}
+
+func TestRemoteKeyboardFlags(t *testing.T) {
+	const fn = 0x800000
+	// Independent ANSI keycode expectations in A-Z and 0-9 order. A
+	// round-trip alone cannot spot two keys swapped in both directions.
+	for start, codes := range map[uint16][]uint16{
+		0x41: {0, 11, 8, 2, 14, 3, 5, 4, 34, 38, 40, 37, 46, 45, 31, 35, 12, 15, 1, 17, 32, 9, 13, 7, 16, 6},
+		0x30: {29, 18, 19, 20, 21, 23, 22, 26, 28, 25},
+		0x70: {122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111, 105, 107, 113, 106, 64, 79, 80, 90},
+	} {
+		for i, want := range codes {
+			vk := start + uint16(i)
+			code, ok := mapKey(vk, false, defaultMods)
+			if !ok || code != want || remoteKeyFlags(code, 0) != 0 {
+				t.Fatalf("VK %#x -> %d flags %#x", vk, code, remoteKeyFlags(code, 0))
+			}
+		}
+	}
+	for vk := range vkMap {
+		code, _ := mapKey(vk, false, defaultMods)
+		if remoteKeyFlags(code, 0)&fn != 0 {
+			t.Fatal("unexpected Fn", vk)
+		}
+	}
+	for _, code := range []uint16{123, 124, 125, 126, 76, 82, 92} {
+		if remoteKeyFlags(code, flagShift) != flagNumericPad|flagShift {
+			t.Fatal(code)
+		}
+	}
+}
+func TestModifierLifetime(t *testing.T) {
+	m := remoteModifiers{}
+	m.update(0xa2, 55, false)
+	if m.flags(false) != 0 {
+		t.Fatal("unmatched hotkey release")
+	}
+	m.update(0xa2, 55, true)
+	m.update(0xa3, 54, true)
+	if m.flags(false) != flagCommand|0x8|0x10 {
+		t.Fatal("both Command keys")
+	}
+	if c, ok := m.update(0xa2, 59, false); !ok || c != 55 {
+		t.Fatal("released a different key after layout change")
+	}
+	if m.flags(false) != flagCommand|0x10 {
+		t.Fatal("released both sides")
+	}
+	m.update(0xa3, 54, false)
+	if m.flags(true) != flagCaps || remoteKeyFlags(12, m.flags(false)) != 0 || remoteKeyFlags(4, m.flags(false)) != 0 {
+		t.Fatal("residual modifier on Q/H")
 	}
 }
