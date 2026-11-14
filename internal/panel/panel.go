@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 
 	"kvmswitch/internal/core"
+	"kvmswitch/internal/update"
 )
 
 //go:embed panel.html
@@ -81,6 +82,7 @@ func (s *Server) URL(tab string) string {
 }
 
 type stateJSON struct {
+	Update    update.State     `json:"update"`
 	Media     core.MediaResult `json:"media"`
 	Transfer  *core.Transfer   `json:"transfer,omitempty"`
 	Version   string           `json:"version"`
@@ -130,10 +132,26 @@ func Start(c *core.Core, h Host, logs *LogRing, dialer bool) (*Server, error) {
 		})
 	}
 	ok := map[string]bool{"ok": true}
+	u := update.Start(core.Version, c.P.OS(), h.Quit)
+	post("/api/update/check", func(w http.ResponseWriter, r *http.Request) {
+		if !u.Check() {
+			fail(w, 409, "更新操作进行中")
+			return
+		}
+		writeJSON(w, 202, ok)
+	})
+	post("/api/update/install", func(w http.ResponseWriter, r *http.Request) {
+		var b struct{ Tag string }
+		if readBody(r, &b) != nil || !u.Install(b.Tag) {
+			fail(w, 409, "请先检查更新并确认当前版本")
+			return
+		}
+		writeJSON(w, 202, ok)
+	})
 
 	api.HandleFunc("/api/state", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, stateJSON{
-			Media: c.MediaState(), Transfer: c.TransferState(), Version: core.Version, SelfOS: c.P.OS(), SelfName: c.P.Hostname(), Dialer: dialer,
+			Update: u.State(), Media: c.MediaState(), Transfer: c.TransferState(), Version: core.Version, SelfOS: c.P.OS(), SelfName: c.P.Hostname(), Dialer: dialer,
 			Autostart: h.Autostart(), State: c.State(), Config: c.Config(),
 		})
 	})

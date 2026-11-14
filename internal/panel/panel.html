@@ -257,6 +257,8 @@ pre{margin:0;padding:14px 18px;font:12.5px/1.6 Consolas,"Cascadia Mono",Menlo,mo
       <h1>系统与日志</h1>
       <p class="sub">程序在后台常驻，关闭这个窗口不会退出。</p>
       <div class="card">
+        <div class="row"><div class="lbl"><b>软件更新</b><span id="updateStatus" role="status">准备检查…</span></div><div class="ctl"><button class="btn" id="checkUpdate">检查更新</button><button class="btn" id="installUpdate" hidden>安装更新</button></div></div>
+        <div id="updateConfirm" hidden><p id="updateWarning"></p><button class="btn" id="updateYes">确认安装并退出</button> <button class="btn" id="updateNo">取消</button></div>
         <div class="row"><div class="lbl"><b>开机自动启动</b><span>登录后在后台启动，不弹出面板（这一项每台设备单独设置）</span></div><div class="ctl"><label class="sw"><input type="checkbox" id="autostart"><span></span></label></div></div>
         <div class="row"><div class="lbl"><b>配置文件</b><span>所有设置都保存在这个文件里</span></div><div class="ctl"><button class="btn" data-open="config">打开</button></div></div>
         <div class="row"><div class="lbl"><b>退出 KVMSwitch</b><span>退出后热键失效，两台设备不再联动</span></div><div class="ctl"><button class="btn danger" id="quitBtn">退出</button></div></div>
@@ -456,6 +458,13 @@ function renderPorts() {
 }
 
 function render(s) {
+  const u = s.update || {};
+  $('#updateStatus').textContent = '当前 '+s.version+' · '+(u.Message || '准备检查…');
+  $('#checkUpdate').disabled = !!u.Busy;
+  $('#installUpdate').hidden = !u.Ready;
+  $('#installUpdate').disabled = !!u.Busy;
+  $('#installUpdate').textContent = u.New ? '更新到 '+u.Latest : '重装当前版本';
+  $('[data-tab="system"]').textContent = u.New ? '系统与日志 · 有更新' : '系统与日志';
   state = s;
   const t=s.transfer,m=s.media||{};
   $('#testMedia').disabled=!!m.Listening;
@@ -552,6 +561,19 @@ function refreshBindings(id){const sig=JSON.stringify([id,displayOptions]);if(si
 }
 $('#scanDisplays').onclick=async()=>{try{displayOptions=(await api('/api/monitor/list',{})).items||[];refreshBindings(cfg.monitor_id||'');if(!displayOptions.length)toast('没有可绑定的外接显示器')}catch(e){toast(e.message,true)}};
 $('#monitorBinding').onchange=e=>save({monitor_id:e.target.value});
+$('#checkUpdate').onclick=async()=>{try{await api('/api/update/check',{});await tick()}catch(e){toast(e.message,true)}};
+let confirmedTag='';
+$('#installUpdate').onclick=()=>{
+  const u=state?.update;if(!u?.Ready || u.Busy)return;
+  confirmedTag=u.Latest;
+  $('#updateWarning').textContent='安装 '+confirmedTag+' 将退出程序并中断键鼠和传输。请先把键鼠切回本机并保存工作。'+(state.self_os==='windows'?'Windows 将打开 MSI 安装向导，完成后从开始菜单启动。':'Mac 将替换当前应用并重新打开。');
+  $('#updateConfirm').hidden=false;
+};
+$('#updateNo').onclick=()=>{$('#updateConfirm').hidden=true;confirmedTag=''};
+$('#updateYes').onclick=async()=>{
+  $('#updateConfirm').hidden=true;
+  try{await api('/api/update/install',{tag:confirmedTag});await tick()}catch(e){toast(e.message,true)}
+};
 $('#testMedia').onclick=async()=>{try{await api('/api/media/test',{});await tick()}catch(e){toast(e.message,true)}};
 for(const [id,action] of [['cancelTransfer','cancel'],['retryTransfer','retry']])$('#'+id).onclick=async()=>{try{await api('/api/transfer/action',{Action:action});await tick()}catch(e){toast(e.message,true)}};
 // ---------- 显示器测试 ----------
