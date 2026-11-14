@@ -29,7 +29,8 @@ var (
 	cgDisplayPixelsHigh         func(d uint32) uintptr
 	cfRelease                   func(p uintptr)
 	axIsProcessTrusted          func() bool
-	axIsProcessTrustedWithOpts  func(opts uintptr) bool
+	cgCanPostEvents             func() bool
+	cgRequestPostEvents         func() bool
 )
 
 const (
@@ -83,7 +84,8 @@ func loadCG() error {
 	purego.RegisterLibFunc(&cgPostPID, cg, "CGEventPostToPid")
 	purego.RegisterLibFunc(&cfRelease, cf, "CFRelease")
 	purego.RegisterLibFunc(&axIsProcessTrusted, as, "AXIsProcessTrusted")
-	purego.RegisterLibFunc(&axIsProcessTrustedWithOpts, as, "AXIsProcessTrustedWithOptions")
+	purego.RegisterLibFunc(&cgCanPostEvents, cg, "CGPreflightPostEventAccess")
+	purego.RegisterLibFunc(&cgRequestPostEvents, cg, "CGRequestPostEventAccess")
 	return nil
 }
 

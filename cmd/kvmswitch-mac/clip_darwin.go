@@ -170,17 +170,6 @@ func writePasteboard(kind string, data []byte, paths []string) (count int, err e
 	return
 }
 
-// promptAccessibility 让系统弹出“辅助功能”授权提示，并把本程序加入列表。
-func promptAccessibility() bool {
-	var trusted bool
-	withPool(func() {
-		yes := cls("NSNumber").Send(sel("numberWithBool:"), true)
-		opts := cls("NSDictionary").Send(sel("dictionaryWithObject:forKey:"), yes, nsString("AXTrustedCheckOptionPrompt"))
-		trusted = axIsProcessTrustedWithOpts(uintptr(opts))
-	})
-	return trusted
-}
-
 // Query advertised formats only; do not materialize large promised pasteboard items.
 func (*macPlatform) HasClip() (ok bool) {
 	withPool(func() {

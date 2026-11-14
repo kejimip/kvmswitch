@@ -3,6 +3,7 @@
 package panel
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/subtle"
 	_ "embed"
@@ -22,7 +23,13 @@ import (
 )
 
 //go:embed panel.html
-var page []byte
+var markup []byte
+
+//go:embed panel.css
+var stylesheet []byte
+
+// Inline the local stylesheet to preserve the single-document CSP and offline UI.
+var page = bytes.Replace(markup, []byte("/* embedded-panel-styles */"), stylesheet, 1)
 
 // Host 是面板需要的、与操作系统相关的能力。
 type Host interface {

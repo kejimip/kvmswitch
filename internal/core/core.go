@@ -120,7 +120,7 @@ func (c *Core) Start() error {
 			f()
 		}
 	}()
-	go c.watchPermission()
+	go c.watchPermission(c.selfCan)
 	if c.opt.Listen {
 		return c.listen()
 	}
@@ -168,13 +168,14 @@ func (c *Core) selfInfo() proto.Info {
 	return proto.Info{Name: c.P.Hostname(), OS: c.P.OS(), CanControl: c.selfCan, Version: Version}
 }
 
-func (c *Core) watchPermission() {
-	last := c.P.CanControl()
+// Compare against the value already published by Start, not a second startup sample.
+func (c *Core) watchPermission(last bool) {
 	for range time.Tick(2 * time.Second) {
 		if can := c.P.CanControl(); can != last {
 			last = can
 			c.do(func() {
 				c.selfCan = can
+				log.Printf("键鼠控制权限状态更新：可接收键鼠=%t", can)
 				if c.ctrl != nil {
 					c.ctrl.WriteJSON(proto.MsgInfo, c.selfInfo())
 				}

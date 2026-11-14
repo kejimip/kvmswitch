@@ -16,31 +16,32 @@ import (
 
 // fake 是一个模拟的操作系统：记录核心对它的每一次调用。
 type fake struct {
-	app, focus uintptr
-	pasted     int
-	beforeRead func()
-	mu         sync.Mutex
-	os, name   string
-	dir        string
-	forward    bool
-	controlled bool
-	awake      bool
-	canControl bool
-	heldCtrl   bool
-	keys       []uint16
-	moves      [][2]int32
-	buttons    int
-	wheels     int
-	monitor    []uint16
-	monitorErr error
-	clipChg    uint64
-	clip       *xfer.Clip
-	written    []xfer.Clip
-	recycled   []string
-	notes      []string
-	beeps      int
-	pasteOn    uint16 // 注入这个键时报告“发生了粘贴”
-	tuned      *Config
+	app, focus     uintptr
+	pasted         int
+	beforeRead     func()
+	mu             sync.Mutex
+	os, name       string
+	dir            string
+	forward        bool
+	controlled     bool
+	awake          bool
+	denyFirstCheck bool
+	canControl     bool
+	heldCtrl       bool
+	keys           []uint16
+	moves          [][2]int32
+	buttons        int
+	wheels         int
+	monitor        []uint16
+	monitorErr     error
+	clipChg        uint64
+	clip           *xfer.Clip
+	written        []xfer.Clip
+	recycled       []string
+	notes          []string
+	beeps          int
+	pasteOn        uint16 // 注入这个键时报告“发生了粘贴”
+	tuned          *Config
 }
 
 func (f *fake) lock() func()     { f.mu.Lock(); return f.mu.Unlock }
@@ -53,6 +54,10 @@ func (f *fake) SetForward(on bool) {
 }
 func (f *fake) CanControl() bool {
 	defer f.lock()()
+	if f.denyFirstCheck {
+		f.denyFirstCheck = false
+		return false
+	}
 	return f.canControl
 }
 func (f *fake) SetControlled(on bool) {
@@ -161,6 +166,11 @@ func freePort(t *testing.T) int {
 // newRig 启动一台“Windows”（接听）和一台“Mac”（拨号），两者使用相同的核心代码。
 func newRig(t *testing.T, sameKey bool) *rig {
 	t.Helper()
+	return newRigWithStartupGrant(t, sameKey, false)
+}
+
+func newRigWithStartupGrant(t *testing.T, sameKey, grantAfterFirstCheck bool) *rig {
+	t.Helper()
 	port := freePort(t)
 	mk := func(osName, name, key string, listen bool) (*Core, *fake) {
 		dir := t.TempDir()
@@ -173,7 +183,7 @@ func newRig(t *testing.T, sameKey bool) *rig {
 		if err := SaveConfig(path, cfg); err != nil {
 			t.Fatal(err)
 		}
-		f := &fake{os: osName, name: name, dir: filepath.Join(dir, "recv"), canControl: true}
+		f := &fake{os: osName, name: name, dir: filepath.Join(dir, "recv"), canControl: true, denyFirstCheck: osName == "mac" && grantAfterFirstCheck}
 		c, _, err := New(f, Options{ConfigPath: path, Listen: listen})
 		if err != nil {
 			t.Fatal(err)
@@ -218,6 +228,13 @@ func (r *rig) active(win, mac string) {
 	r.wait("键鼠归属 win="+win+" mac="+mac, func() bool {
 		return r.win.State().Active == win && r.mac.State().Active == mac
 	})
+}
+
+func TestStartupPermissionGrantReachesPeer(t *testing.T) {
+	r := newRigWithStartupGrant(t, true, true)
+	r.wait("启动时授予的权限同步到两端", func() bool { return r.mac.State().SelfCanControl && r.win.State().PeerCanControl })
+	r.win.Toggle()
+	r.active(ActivePeer, ActiveSelf)
 }
 
 func TestConnectAndInfo(t *testing.T) {

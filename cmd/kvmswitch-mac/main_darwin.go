@@ -87,7 +87,7 @@ func (p *macPlatform) SetForward(on bool) {
 		p.tap.setForward(on)
 	}
 }
-func (p *macPlatform) CanControl() bool      { return axIsProcessTrusted() }
+func (p *macPlatform) CanControl() bool      { return cgCanPostEvents() }
 func (p *macPlatform) SetControlled(on bool) { p.inj.setActive(on) }
 func (p *macPlatform) ApplyTuning(cfg *core.Config) {
 	p.inj.tune(cfg)
@@ -197,7 +197,9 @@ func (p *macPlatform) Open(what string) error {
 		os.MkdirAll(p.RecvDir(), 0o755)
 		target = p.RecvDir()
 	case "accessibility":
-		promptAccessibility()
+		if !p.CanControl() {
+			cgRequestPostEvents()
+		}
 		target = "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
 	default:
 		return errors.New("未知的目标")
@@ -358,9 +360,11 @@ func main() {
 			uiPanelURL = srv.URL
 		}
 		log.Printf("KVMSwitch %s 已启动，热键 %s，紧急热键 %s", core.Version, c.Config().Hotkey, c.Config().EmergencyHotkey)
-		if !p.CanControl() {
-			log.Printf("尚未获得键鼠控制权限")
-			promptAccessibility()
+		canPost := p.CanControl()
+		exe, _ := os.Executable()
+		log.Printf("键鼠权限检查：PostEvent=%t，AX=%t，程序=%s", canPost, axIsProcessTrusted(), exe)
+		if !canPost {
+			cgRequestPostEvents()
 		}
 		switch {
 		case created:
