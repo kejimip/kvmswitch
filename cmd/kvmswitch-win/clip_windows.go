@@ -7,6 +7,7 @@ import (
 	"image"
 	"image/draw"
 	"image/png"
+	"runtime"
 	"strings"
 	"time"
 	"unsafe"
@@ -17,6 +18,7 @@ import (
 )
 
 const (
+	cfDIBV5       = 17
 	cfDIB         = 8
 	cfUnicodeText = 13
 	cfHDrop       = 15
@@ -25,6 +27,7 @@ const (
 
 var (
 	cfPNG        = regFormat("PNG")
+	cfMimePNG    = regFormat("image/png")
 	cfDropEffect = regFormat("Preferred DropEffect")
 )
 
@@ -74,8 +77,10 @@ func getData(f uintptr) []byte {
 	return globalBytes(h)
 }
 
-// readClipboard 读取当前剪贴板，优先级：文件 > 文本 > 图片。
+// readClipboard 读取当前剪贴板，优先级：文件 > 图片 > 文本。
 func readClipboard() (xfer.Clip, bool) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	var clip xfer.Clip
 	if !openClipboard() {
 		return clip, false
@@ -101,6 +106,9 @@ func readClipboard() (xfer.Clip, bool) {
 			}
 		}
 	}
+	if img, ok := clipboardImage(hasFormat, getData); ok {
+		return xfer.Clip{Kind: xfer.KindImage, Data: img}, true
+	}
 	if hasFormat(cfUnicodeText) {
 		if b := getData(cfUnicodeText); len(b) >= 2 {
 			u := unsafe.Slice((*uint16)(unsafe.Pointer(&b[0])), len(b)/2)
@@ -112,23 +120,27 @@ func readClipboard() (xfer.Clip, bool) {
 			}
 		}
 	}
-	if hasFormat(cfPNG) {
-		if b := getData(cfPNG); len(b) > 8 {
-			clip.Kind = xfer.KindImage
-			clip.Data = b
-			return clip, true
-		}
-	}
-	if hasFormat(cfDIB) {
-		if b := getData(cfDIB); len(b) > 40 {
-			if p, err := dibToPNG(b); err == nil {
-				clip.Kind = xfer.KindImage
-				clip.Data = p
-				return clip, true
+	return clip, false
+}
+
+// Different applications publish PNG bytes under either registered name.
+func clipboardImage(has func(uintptr) bool, get func(uintptr) []byte) ([]byte, bool) {
+	for _, f := range []uintptr{cfPNG, cfMimePNG} {
+		if f != 0 && has(f) {
+			b := get(f)
+			if _, err := png.DecodeConfig(bytes.NewReader(b)); err == nil {
+				return b, true
 			}
 		}
 	}
-	return clip, false
+	for _, f := range []uintptr{cfDIBV5, cfDIB} {
+		if has(f) {
+			if b, err := dibToPNG(get(f)); err == nil {
+				return b, true
+			}
+		}
+	}
+	return nil, false
 }
 
 func setData(f uintptr, data []byte) error {
@@ -296,5 +308,5 @@ func pngToDIB(p []byte) ([]byte, error) {
 }
 
 func (*winPlatform) HasClip() bool {
-	return hasFormat(cfHDrop) || hasFormat(cfUnicodeText) || hasFormat(cfPNG) || hasFormat(cfDIB)
+	return hasFormat(cfHDrop) || hasFormat(cfUnicodeText) || hasFormat(cfPNG) || hasFormat(cfMimePNG) || hasFormat(cfDIBV5) || hasFormat(cfDIB)
 }

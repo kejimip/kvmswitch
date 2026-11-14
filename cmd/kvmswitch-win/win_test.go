@@ -87,3 +87,21 @@ func TestStructSizes(t *testing.T) {
 	check("MSG", unsafe.Sizeof(winMsg{}), 48)
 	check("PHYSICAL_MONITOR", unsafe.Sizeof(physMonitor{}), 264)
 }
+
+func TestRegisteredPNGFormats(t *testing.T) {
+	var pngBytes bytes.Buffer
+	if err := png.Encode(&pngBytes, image.NewNRGBA(image.Rect(0, 0, 2, 2))); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []uintptr{cfPNG, cfMimePNG} {
+		got, ok := clipboardImage(func(k uintptr) bool { return k == f || k == cfUnicodeText }, func(k uintptr) []byte {
+			if k == f {
+				return pngBytes.Bytes()
+			}
+			return []byte("caption")
+		})
+		if !ok || !bytes.Equal(got, pngBytes.Bytes()) {
+			t.Fatal("PNG lost", f)
+		}
+	}
+}

@@ -154,6 +154,22 @@ func writePasteboard(kind string, data []byte, paths []string) (count int, err e
 		case xfer.KindImage:
 			okv = objc.Send[bool](pb, sel("setData:forType:"), nsData(data), nsString(utiPNG))
 		case xfer.KindFiles:
+			// One pasteboard item with two representations: Finder consumes the
+			// file URL, while image editors can request the original PNG bytes.
+			if data := singlePNGFile(paths); data != nil {
+				item := cls("NSPasteboardItem").Send(sel("new"))
+				if item != 0 {
+					defer item.Send(sel("release"))
+					url := cls("NSURL").Send(sel("fileURLWithPath:"), nsString(paths[0]))
+					if url != 0 && objc.Send[bool](item, sel("setString:forType:"), url.Send(sel("absoluteString")), nsString(utiFileURL)) &&
+						objc.Send[bool](item, sel("setData:forType:"), nsData(data), nsString(utiPNG)) {
+						okv = objc.Send[bool](pb, sel("writeObjects:"), cls("NSArray").Send(sel("arrayWithObject:"), item))
+					}
+				}
+				if okv {
+					break
+				}
+			}
 			arr := cls("NSMutableArray").Send(sel("array"))
 			for _, p := range paths {
 				if u := cls("NSURL").Send(sel("fileURLWithPath:"), nsString(p)); u != 0 {
