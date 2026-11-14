@@ -108,6 +108,8 @@ var (
 	keepAwake        atomic.Bool
 	panelSrv         *panel.Server
 	panelLaunch      atomic.Bool
+	panelPID         atomic.Uint32
+	pFindWindowExW   = user32.NewProc("FindWindowExW")
 )
 
 func uiRefresh(st core.State) {
@@ -223,12 +225,33 @@ func setAutostart(on bool) error {
 	return k.SetStringValue("KVMSwitch", `"`+exe+`" --background`)
 }
 
+// Explorer may expose a TabProxyWindow with our exact title even when the
+// WebView is closed. Only activate a real window owned by our live child.
+func ownedPanelWindow(pid uint32) uintptr {
+	if pid == 0 {
+		return 0
+	}
+	class, title := u16("webview"), u16(panelWinTitle)
+	var prev uintptr
+	for {
+		h, _, _ := pFindWindowExW.Call(0, prev, uintptr(unsafe.Pointer(class)), uintptr(unsafe.Pointer(title)))
+		if h == 0 {
+			return 0
+		}
+		var owner uint32
+		if _, err := windows.GetWindowThreadProcessId(windows.HWND(h), &owner); err == nil && owner == pid {
+			return h
+		}
+		prev = h
+	}
+}
+
 // openPanel 显示操作面板窗口；已打开则把它带到前台。tab 为要定位到的页面，可为空。
 func openPanel(tab string) {
 	if panelSrv == nil {
 		return
 	}
-	if h, _, _ := pFindWindowW.Call(0, uintptr(unsafe.Pointer(u16(panelWinTitle)))); h != 0 {
+	if h := ownedPanelWindow(panelPID.Load()); h != 0 {
 		if r, _, _ := pIsIconic.Call(h); r != 0 {
 			pShowWindow.Call(h, 9) // SW_RESTORE
 		}
@@ -243,7 +266,12 @@ func openPanel(tab string) {
 	if err == nil {
 		cmd := exec.Command(exe, "--panel-window")
 		cmd.Env = append(os.Environ(), "KVMSWITCH_PANEL_URL="+panelSrv.URL(tab))
-		err = cmd.Run()
+		err = cmd.Start()
+		if err == nil {
+			panelPID.Store(uint32(cmd.Process.Pid))
+			defer panelPID.Store(0)
+			err = cmd.Wait()
+		}
 	}
 	if err != nil {
 		log.Printf("面板启动失败: %v", err)
