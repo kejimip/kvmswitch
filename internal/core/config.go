@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-const Version = "1.3.3"
+const Version = "1.3.4"
 
 // Config 是一台设备上的全部配置。除 PairingKey、Port、PeerHost 外，其余为“共享设置”，
 // 在任意一端修改后会自动同步到另一端。
