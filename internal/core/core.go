@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"kvmswitch/internal/filedrop"
 	"kvmswitch/internal/proto"
 	"kvmswitch/internal/xfer"
 )
@@ -36,9 +37,11 @@ type ddcAttempt struct {
 
 // Core 是切换状态机。除标注外，字段只在 loop() 所在的 goroutine 里读写。
 type Core struct {
-	P    Platform
-	Keys Keys
-	opt  Options
+	P           Platform
+	fileSession string
+	Files       filedrop.Manager
+	Keys        Keys
+	opt         Options
 
 	cfgp    atomic.Pointer[Config] // 配置视为不可变，修改时整体替换
 	keyp    atomic.Pointer[[]byte]
@@ -151,7 +154,7 @@ func (c *Core) inputs() (self, peer uint16) {
 
 func (c *Core) refresh() {
 	s := State{
-		Connected:      c.ctrl != nil,
+		Connected: c.ctrl != nil, PeerFiles: c.peer.Files, FileSession: c.fileSession,
 		Active:         c.active,
 		PeerName:       c.peer.Name,
 		PeerOS:         c.peer.OS,
@@ -165,7 +168,7 @@ func (c *Core) refresh() {
 }
 
 func (c *Core) selfInfo() proto.Info {
-	return proto.Info{Name: c.P.Hostname(), OS: c.P.OS(), CanControl: c.selfCan, Version: Version}
+	return proto.Info{Files: true, Name: c.P.Hostname(), OS: c.P.OS(), CanControl: c.selfCan, Version: Version}
 }
 
 // Compare against the value already published by Start, not a second startup sample.
@@ -248,6 +251,7 @@ func (c *Core) SetPairing(key, host string) error {
 			res <- err
 			return
 		}
+		c.Files.Forget()
 		c.cfgp.Store(&next)
 		k := NormKey(key)
 		c.keyp.Store(&k)
@@ -547,11 +551,19 @@ type pasteHost interface {
 
 func (c *Core) Interacted() { c.activity.Add(1) }
 
-type clipTicket struct {
+type pasteIntent struct {
 	app, focus uintptr
 	epoch      uint64
+}
+
+// Once the write is published, later shortcuts must go straight to the OS.
+var pastePublished = &pasteIntent{}
+
+type clipTicket struct {
 	id, local  uint64
-	started    atomic.Bool
+	manualOnly bool // A panel retry prepares the clipboard; never replay into a window.
+	writing    atomic.Bool
+	paste      atomic.Pointer[pasteIntent]
 }
 type Transfer struct {
 	Retry, Cancel bool
@@ -567,35 +579,31 @@ func (c *Core) RequestPaste() bool {
 	if t == nil || !c.Config().SyncClipboard || c.activeA.Load() != 1 {
 		return false
 	}
-	if t.local != c.P.ClipChange() {
-		if c.pending.CompareAndSwap(t, nil) {
-			c.transfer.Store(&Transfer{Status: "本机已复制新内容，使用本机剪贴板"})
-		}
+	// A shortcut after publication is native. During a transfer, only record
+	// the user's intent: the switch has already requested the data.
+	if t.paste.Load() == pastePublished {
 		return false
 	}
-	if t.started.CompareAndSwap(false, true) {
-		epoch := c.activity.Load()
-		var app uintptr
-		host, native := c.P.(pasteHost)
-		if native {
-			app = host.PasteApp()
-		}
-		select {
-		case c.ev <- func() {
-			if c.pending.Load() == t {
-				t.app, t.epoch = app, epoch
-				if native && app != 0 && host.PasteApp() == app && c.activity.Load() == epoch {
-					t.focus = host.PasteFocus()
-				}
-				c.transfer.Store(&Transfer{Cancel: true, Status: "正在准备传输"})
-				c.sendClipID(proto.MsgClipFetch, t.id)
-			}
-		}:
-		default:
-			t.started.Store(false)
+	if c.P.ClipChange() != t.local && !t.writing.Load() {
+		return false // local copy wins; OnClip also checks before writing
+	}
+	if t.manualOnly || t.paste.Load() != nil {
+		return t.paste.Load() != pastePublished
+	}
+	intent := &pasteIntent{epoch: c.activity.Load()}
+	if host, ok := c.P.(pasteHost); ok {
+		intent.app = host.PasteApp()
+		if intent.app != 0 {
+			intent.focus = host.PasteFocus()
 		}
 	}
-	return true
+	if c.pending.Load() != t {
+		return false
+	}
+	if t.paste.CompareAndSwap(nil, intent) {
+		return true
+	}
+	return t.paste.Load() != pastePublished
 }
 
 func (c *Core) fetchClip(id uint64) {
@@ -716,6 +724,8 @@ func (c *Core) listen() error {
 				switch pc.Channel {
 				case proto.ChanControl:
 					c.runControl(pc)
+				case proto.ChanFiles:
+					c.acceptFiles(pc)
 				case proto.ChanData:
 					c.runData(pc)
 				default:
@@ -872,6 +882,7 @@ func (c *Core) runControl(pc *proto.Conn) {
 			c.detach()
 			old.Close()
 		}
+		c.fileSession = filedrop.NewID()
 		c.ctrl, c.ctrlStop = pc, stop
 		c.peer = proto.Info{}
 		pc.WriteJSON(proto.MsgInfo, c.selfInfo())
@@ -898,6 +909,12 @@ func (c *Core) runControl(pc *proto.Conn) {
 					}
 				})
 			}
+		case proto.MsgFilesOffer, proto.MsgFilesAccept, proto.MsgFilesStop:
+			c.do(func() {
+				if c.ctrl == pc && c.peer.Files {
+					c.fileControl(t, p)
+				}
+			})
 		case proto.MsgConfig:
 			var s Shared
 			if json.Unmarshal(p, &s) == nil {
@@ -981,12 +998,10 @@ func (c *Core) runControl(pc *proto.Conn) {
 							c.transfer.Store(&Transfer{Status: "本机剪贴板已改变，已放弃重试"})
 							return
 						}
+						q.manualOnly = c.retryWaiting
 						c.pending.Store(q)
-						c.transfer.Store(&Transfer{Cancel: true, Status: "等待粘贴"})
-						if c.retryWaiting && c.retry != nil && c.retry.local == q.local {
-							q.started.Store(true)
-							c.sendClipID(proto.MsgClipFetch, id)
-						}
+						c.transfer.Store(&Transfer{Cancel: true, Status: "正在准备传输"})
+						c.sendClipID(proto.MsgClipFetch, id)
 						c.retryWaiting = false
 						c.retry = nil
 					}
@@ -1042,6 +1057,7 @@ func (c *Core) runControl(pc *proto.Conn) {
 
 // detach 处理控制通道断开：两台设备恢复各自独立。
 func (c *Core) detach() {
+	c.Files.Disconnect()
 	c.clearTransfer()
 	c.lastClip = 0
 	c.pending.Store(nil)
@@ -1158,7 +1174,7 @@ func (c *Core) runData(pc *proto.Conn) {
 	}
 	s.Wanted = func(id uint64) bool {
 		q := c.pending.Load()
-		return q != nil && q.id == id && q.started.Load() && c.Config().SyncClipboard
+		return q != nil && q.id == id && c.Config().SyncClipboard
 	}
 	s.Progress = func(id uint64, done, total int64) {
 		if q := c.pending.Load(); q != nil && q.id == id {
@@ -1176,7 +1192,7 @@ func (c *Core) runData(pc *proto.Conn) {
 	s.OnClip = func(h xfer.Header, data []byte, paths []string) {
 		c.do(func() {
 			q := c.pending.Load()
-			if c.data != s || q == nil || !q.started.Load() || q.id != h.ID {
+			if c.data != s || q == nil || q.id != h.ID {
 				return
 			}
 			defer c.pending.CompareAndSwap(q, nil)
@@ -1184,25 +1200,36 @@ func (c *Core) runData(pc *proto.Conn) {
 				c.transfer.Store(&Transfer{Status: "本机已复制新内容，未覆盖剪贴板"})
 				return
 			}
-			chg, err := c.P.WriteClip(h.Kind, data, paths)
+			q.writing.Store(true)
+			chg, err := c.P.WriteClip(h.Kind, data, paths, q.local)
+			if errors.Is(err, ErrClipChanged) {
+				c.transfer.Store(&Transfer{Status: err.Error()})
+				return
+			}
 			if err != nil {
 				c.failPaste(h.ID, "写入剪贴板失败："+err.Error())
 				log.Printf("写入剪贴板失败: %v", err)
 				return
 			}
 			log.Printf("收到剪贴板: %s，%s", h.Kind, xfer.HumanSize(h.Total))
+			c.lastClip = chg
+			intent := q.paste.Swap(pastePublished)
+			if intent == nil {
+				c.transfer.Store(&Transfer{Status: "已就绪，可直接粘贴", Done: h.Total, Total: h.Total})
+				return
+			}
 			reason := ""
 			host, native := c.P.(pasteHost)
 			switch {
-			case !native || q.app == 0 || q.focus == 0:
+			case !native || intent.app == 0 || intent.focus == 0:
 				reason = "未记录粘贴目标"
 			case h.Cut || c.active != ActiveSelf:
 				reason = "目标状态已改变"
-			case q.epoch != c.activity.Load():
+			case intent.epoch != c.activity.Load():
 				reason = "传输期间有新的输入"
 			case c.P.ClipChange() != chg:
 				reason = "写入后剪贴板又发生变化"
-			case !host.PasteNow(q.app, q.focus):
+			case !host.PasteNow(intent.app, intent.focus):
 				reason = "目标焦点已改变或系统未接受快捷键"
 			}
 			if reason == "" {
@@ -1212,8 +1239,6 @@ func (c *Core) runData(pc *proto.Conn) {
 				c.transfer.Store(&Transfer{Status: "已就绪，请在目标位置粘贴", Done: h.Total, Total: h.Total})
 				c.P.Notify("剪贴板已就绪", "请在目标位置再次粘贴。")
 			}
-			c.lastClip = chg
-
 		})
 	}
 	c.do(func() {

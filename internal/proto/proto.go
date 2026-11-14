@@ -31,6 +31,7 @@ const (
 
 	ChanControl byte = 1
 	ChanData    byte = 2
+	ChanFiles   byte = 3
 
 	MaxFrame  = 4 << 20
 	ChunkSize = 256 << 10
@@ -68,6 +69,9 @@ const (
 	MsgClipCancel
 	MsgClipRetry
 	MsgClipError
+	MsgFilesOffer
+	MsgFilesAccept
+	MsgFilesStop
 )
 
 const (
@@ -98,6 +102,7 @@ type DDCResult struct {
 }
 
 type Info struct {
+	Files      bool   `json:"files,omitempty"`
 	Name       string `json:"name"`
 	OS         string `json:"os"` // "windows" 或 "mac"
 	CanControl bool   `json:"can_control"`

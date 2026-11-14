@@ -1,11 +1,15 @@
 package core
 
 import (
+	"errors"
 	"sync/atomic"
 	"time"
 
 	"kvmswitch/internal/xfer"
 )
+
+// ErrClipChanged means a newer local copy won before the received item was published.
+var ErrClipChanged = errors.New("本机已复制新内容，未覆盖剪贴板")
 
 // Platform 是核心对操作系统的全部要求。Windows 和 Mac 各实现一份。
 // 两个方向的能力都必须具备：既能采集本机键鼠转发出去，也能接受对方的键鼠注入本机。
@@ -32,7 +36,7 @@ type Platform interface {
 	// 剪贴板
 	ClipChange() uint64 // 每次剪贴板变化都会改变的计数
 	ReadClip() (xfer.Clip, bool)
-	WriteClip(kind string, data []byte, paths []string) (change uint64, err error)
+	WriteClip(kind string, data []byte, paths []string, expected uint64) (change uint64, err error)
 
 	// 交互
 	Confirm(msg string) bool // 弹窗询问，60 秒不答视为否
@@ -50,6 +54,8 @@ const (
 )
 
 type State struct {
+	FileSession    string `json:"file_session"`
+	PeerFiles      bool   `json:"peer_files"`
 	Connected      bool   `json:"connected"`
 	Active         string `json:"active"`
 	PeerName       string `json:"peer_name"`

@@ -62,8 +62,8 @@ func (p *winPlatform) SetMonitorInput(v uint16, cfg *core.Config) error {
 
 func (p *winPlatform) ClipChange() uint64          { return uint64(clipboardSeq()) }
 func (p *winPlatform) ReadClip() (xfer.Clip, bool) { return readClipboard() }
-func (p *winPlatform) WriteClip(kind string, data []byte, paths []string) (uint64, error) {
-	seq, err := writeClipboard(kind, data, paths)
+func (p *winPlatform) WriteClip(kind string, data []byte, paths []string, expected uint64) (uint64, error) {
+	seq, err := writeClipboard(kind, data, paths, &expected)
 	return uint64(seq), err
 }
 
@@ -89,7 +89,7 @@ func (p *winPlatform) Quit() {
 	pPostMessageW.Call(hwndMain, wmClose, 0, 0)
 }
 func (p *winPlatform) CopyText(s string) error {
-	_, err := writeClipboard(xfer.KindText, []byte(s), nil)
+	_, err := writeClipboard(xfer.KindText, []byte(s), nil, nil)
 	return err
 }
 func (p *winPlatform) Open(what string) error {
@@ -177,6 +177,7 @@ func main() {
 	if err != nil {
 		fatal("读取配置失败：\n" + err.Error() + "\n\n配置文件：" + configPath())
 	}
+	defer c.Files.Forget()
 	p.inj.fetch = c.RequestPaste
 	theCore = c
 	xfer.CleanOld(p.RecvDir(), 3)

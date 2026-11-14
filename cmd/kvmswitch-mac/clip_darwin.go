@@ -11,6 +11,7 @@ import (
 	"github.com/ebitengine/purego/objc"
 
 	"kvmswitch/internal/clipimage"
+	"kvmswitch/internal/core"
 	"kvmswitch/internal/xfer"
 )
 
@@ -167,9 +168,17 @@ func readPasteboard() (clip xfer.Clip, ok bool) {
 }
 
 // writePasteboard 写入剪贴板，返回写入后的 changeCount。
-func writePasteboard(kind string, data []byte, paths []string) (count int, err error) {
+func writePasteboard(kind string, data []byte, paths []string, expected *uint64) (count int, err error) {
+	var preview []byte
+	if kind == xfer.KindFiles {
+		preview = clipimage.FilePreview(paths)
+	}
 	withPool(func() {
 		pb := pasteboard()
+		if expected != nil && uint64(objc.Send[int](pb, sel("changeCount"))) != *expected {
+			err = core.ErrClipChanged
+			return
+		}
 		pb.Send(sel("clearContents"))
 		okv := false
 		switch kind {
@@ -180,13 +189,13 @@ func writePasteboard(kind string, data []byte, paths []string) (count int, err e
 		case xfer.KindFiles:
 			// One pasteboard item with two representations: Finder consumes the
 			// file URL, while image editors can request the image pixels.
-			if data := clipimage.FilePreview(paths); data != nil {
+			if preview != nil {
 				item := cls("NSPasteboardItem").Send(sel("new"))
 				if item != 0 {
 					defer item.Send(sel("release"))
 					url := cls("NSURL").Send(sel("fileURLWithPath:"), nsString(paths[0]))
 					if url != 0 && objc.Send[bool](item, sel("setString:forType:"), url.Send(sel("absoluteString")), nsString(utiFileURL)) &&
-						objc.Send[bool](item, sel("setData:forType:"), nsData(data), nsString(utiPNG)) {
+						objc.Send[bool](item, sel("setData:forType:"), nsData(preview), nsString(utiPNG)) {
 						okv = objc.Send[bool](pb, sel("writeObjects:"), cls("NSArray").Send(sel("arrayWithObject:"), item))
 					}
 				}

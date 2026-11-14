@@ -167,3 +167,10 @@ progress{accent-color:var(--accent);max-width:100%}
  .dev .meta{font-size:11px}.dev .name{font-size:14px}.step{grid-template-columns:24px minmax(0,1fr)}
 }
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{transition:none!important}}
+
+#ftDrop{margin:8px 16px;padding:18px;border:1px dashed var(--line);background:var(--bg);border-radius:12px;text-align:center;display:grid;justify-items:center;gap:5px}
+#ftDrop.over{background:var(--accent-bg);border-color:var(--accent)}
+#ftDrop span,#ftSum,.ft-record small,#ftHistory>div:only-child:not(.ft-record){color:var(--muted)}
+#ftQueue{max-height:180px;overflow:auto}.ft-item{display:flex;align-items:center;justify-content:space-between;gap:10px;overflow-wrap:anywhere}
+#ftQueue .ft-item,.ft-record,#ftHistory>div:only-child:not(.ft-record){padding:8px 16px}
+.ft-record{border-top:1px solid var(--line)}.ft-record small{display:block}.ft-record progress{width:100%;height:5px;accent-color:var(--accent)}#ftDir{overflow-wrap:anywhere;user-select:text}

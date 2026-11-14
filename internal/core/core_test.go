@@ -1,8 +1,11 @@
 package core
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"image"
+	"image/png"
 	"net"
 	"os"
 	"path/filepath"
@@ -101,17 +104,23 @@ func (f *fake) ClipChange() uint64 {
 	return f.clipChg
 }
 func (f *fake) ReadClip() (xfer.Clip, bool) {
-	defer f.lock()()
-	if f.beforeRead != nil {
-		f.beforeRead()
+	f.mu.Lock()
+	before := f.beforeRead
+	f.mu.Unlock()
+	if before != nil {
+		before()
 	}
+	defer f.lock()()
 	if f.clip == nil {
 		return xfer.Clip{}, false
 	}
 	return *f.clip, true
 }
-func (f *fake) WriteClip(kind string, data []byte, paths []string) (uint64, error) {
+func (f *fake) WriteClip(kind string, data []byte, paths []string, expected uint64) (uint64, error) {
 	defer f.lock()()
+	if expected != f.clipChg {
+		return 0, ErrClipChanged
+	}
 	f.clipChg++
 	f.written = append(f.written, xfer.Clip{Kind: kind, Data: data, Paths: paths})
 	return f.clipChg, nil
@@ -352,19 +361,19 @@ func TestClipboardFollowsSwitch(t *testing.T) {
 	r.fw.copyText("来自 Windows")
 	r.win.Hotkey(false)
 	r.active(ActivePeer, ActiveSelf)
-	r.wait("对端收到待粘贴通知", func() bool { return r.mac.pending.Load() != nil })
-	r.fm.get(func() {
-		if len(r.fm.written) != 0 {
-			t.Fatal("未按粘贴就传输了内容")
-		}
-	})
-	if !r.mac.RequestPaste() {
-		t.Fatal("未处理按需传输")
-	}
 	r.wait("Mac 收到剪贴板", func() bool {
 		var ok bool
 		r.fm.get(func() { ok = len(r.fm.written) == 1 && string(r.fm.written[0].Data) == "来自 Windows" })
 		return ok
+	})
+	r.wait("Mac 剪贴板就绪", func() bool { return r.mac.pending.Load() == nil })
+	if r.mac.RequestPaste() {
+		t.Fatal("就绪后不应拦截系统粘贴")
+	}
+	r.fm.get(func() {
+		if r.fm.pasted != 0 || len(r.fm.notes) != 0 {
+			t.Fatal("只切换不应模拟粘贴或提示再按一次")
+		}
 	})
 	// 切回：Mac 上没有新复制的内容，不应把刚收到的内容原样弹回去
 	r.win.Hotkey(false)
@@ -381,20 +390,63 @@ func TestClipboardFollowsSwitch(t *testing.T) {
 	r.fm.copyText("来自 Mac")
 	r.win.Hotkey(false)
 	r.active(ActiveSelf, ActivePeer)
-	r.wait("对端收到待粘贴通知", func() bool { return r.win.pending.Load() != nil })
-	r.fw.get(func() {
-		if len(r.fw.written) != 0 {
-			t.Fatal("未按粘贴就传输了内容")
-		}
-	})
-	if !r.win.RequestPaste() {
-		t.Fatal("未处理按需传输")
-	}
 	r.wait("Windows 收到剪贴板", func() bool {
 		var ok bool
 		r.fw.get(func() { ok = len(r.fw.written) == 1 && string(r.fw.written[0].Data) == "来自 Mac" })
 		return ok
 	})
+}
+
+// Finder exposes an image file, while an editor can expose only PNG pixels.
+func TestMacImageReadyOnSwitchWithoutPaste(t *testing.T) {
+	var b bytes.Buffer
+	if err := png.Encode(&b, image.NewRGBA(image.Rect(0, 0, 3, 2))); err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range []string{xfer.KindFiles, xfer.KindImage} {
+		t.Run(kind, func(t *testing.T) {
+			r := newRig(t, true)
+			r.connected()
+			path := filepath.Join(t.TempDir(), "photo.png")
+			if e := os.WriteFile(path, b.Bytes(), 0600); e != nil {
+				t.Fatal(e)
+			}
+			clip := xfer.Clip{Kind: kind, Data: b.Bytes()}
+			if kind == xfer.KindFiles {
+				clip.Paths = []string{path}
+				clip.Data = nil
+			}
+			r.fm.get(func() { r.fm.clipChg++; r.fm.clip = &clip })
+			r.mac.Hotkey(false)
+			r.wait("ready without paste", func() bool {
+				st := r.win.TransferState()
+				return st != nil && st.Status == "已就绪，可直接粘贴" && r.win.pending.Load() == nil
+			})
+			if r.win.RequestPaste() {
+				t.Fatal("intercepted native paste after prefetch")
+			}
+			r.fw.get(func() {
+				if len(r.fw.written) != 1 || r.fw.written[0].Kind != kind || r.fw.pasted != 0 || len(r.fw.notes) != 0 {
+					t.Fatal("unexpected clipboard or paste")
+				}
+				got := r.fw.written[0].Data
+				if kind == xfer.KindFiles {
+					paths := r.fw.written[0].Paths
+					if len(paths) != 1 || filepath.Base(paths[0]) != "photo.png" {
+						t.Fatal(paths)
+					}
+					var err error
+					got, err = os.ReadFile(paths[0])
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				if !bytes.Equal(got, b.Bytes()) {
+					t.Fatal("image changed")
+				}
+			})
+		})
+	}
 }
 
 // 在 Windows 剪切文件 -> 切到 Mac -> 按粘贴键 -> Windows 保留源文件。
@@ -412,15 +464,6 @@ func TestCutThenPasteRetainsSource(t *testing.T) {
 	r.fm.get(func() { r.fm.pasteOn = 0x56 })
 	r.win.Hotkey(false)
 	r.active(ActivePeer, ActiveSelf)
-	r.wait("对端收到待粘贴通知", func() bool { return r.mac.pending.Load() != nil })
-	r.fm.get(func() {
-		if len(r.fm.written) != 0 {
-			t.Fatal("未按粘贴就传输了内容")
-		}
-	})
-	if !r.mac.RequestPaste() {
-		t.Fatal("未处理按需传输")
-	}
 	r.wait("文件到达 Mac", func() bool {
 		var ok bool
 		r.fm.get(func() { ok = len(r.fm.written) == 1 && len(r.fm.written[0].Paths) == 1 })
@@ -834,16 +877,11 @@ func TestRetryAfterCancel(t *testing.T) {
 	r := newRig(t, true)
 	r.connected()
 	r.fw.copyText("retry me")
-	r.win.Hotkey(false)
-	r.active(ActivePeer, ActiveSelf)
-	r.wait("offer", func() bool { return r.mac.pending.Load() != nil })
-	// Pause the source before it can read its clipboard. Cancel and retry across the real control channel.
 	entered, release := make(chan struct{}), make(chan struct{})
 	var once sync.Once
 	r.fw.get(func() { r.fw.beforeRead = func() { once.Do(func() { close(entered); <-release }) } })
-	if !r.mac.RequestPaste() {
-		t.Fatal("request not started")
-	}
+	r.win.Hotkey(false)
+	r.active(ActivePeer, ActiveSelf)
 	select {
 	case <-entered:
 	case <-time.After(2 * time.Second):

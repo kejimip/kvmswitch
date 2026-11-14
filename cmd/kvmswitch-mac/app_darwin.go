@@ -4,6 +4,7 @@ import (
 	"log"
 	"os/exec"
 	"sync"
+	"unsafe"
 
 	"github.com/ebitengine/purego"
 	"github.com/ebitengine/purego/objc"
@@ -165,6 +166,7 @@ func openPanel(tab string) {
 				panelWin.Send(sel("center"))
 				conf := cls("WKWebViewConfiguration").Send(sel("alloc")).Send(sel("init"))
 				panelWeb = cls("WKWebView").Send(sel("alloc")).Send(sel("initWithFrame:configuration:"), 0.0, 0.0, w, h, conf)
+				panelWeb.Send(sel("setUIDelegate:"), appTarget)
 				panelWin.Send(sel("setContentView:"), panelWeb)
 			}
 			visible := objc.Send[bool](panelWin, sel("isVisible"))
@@ -186,6 +188,7 @@ func runApp(ready func()) error {
 	pool := cls("NSAutoreleasePool").Send(sel("alloc")).Send(sel("init"))
 
 	c, err := objc.RegisterClass("KVMAppTarget", objc.GetClass("NSObject"), nil, nil, []objc.MethodDef{
+		{Cmd: sel("webView:runOpenPanelWithParameters:initiatedByFrame:completionHandler:"), Fn: chooseUploadFiles},
 		{Cmd: sel("kvmDrain:"), Fn: func(self objc.ID, cmd objc.SEL, arg objc.ID) { drainMain() }},
 		{Cmd: sel("kvmOpenPanel:"), Fn: func(self objc.ID, cmd objc.SEL, sender objc.ID) { openPanel("") }},
 		{Cmd: sel("kvmToggle:"), Fn: func(self objc.ID, cmd objc.SEL, sender objc.ID) {
@@ -227,4 +230,28 @@ func runApp(ready func()) error {
 // quitApp 结束应用循环；可在任意 goroutine 调用。
 func quitApp() {
 	onMain(func() { nsApp.Send(sel("terminate:"), objc.ID(0)) })
+}
+
+// WebKit supplies an Objective-C block, not a Go-created objc.NewBlock. Call
+// its native invoke slot synchronously while WebKit still owns the block.
+func chooseUploadFiles(self objc.ID, cmd objc.SEL, web, params, frame objc.ID, block objc.Block) {
+	if block == 0 {
+		return
+	}
+	header := (*struct {
+		isa             uintptr
+		flags, reserved int32
+		invoke          uintptr
+	})(unsafe.Pointer(uintptr(block)))
+	var finish func(objc.Block, objc.ID)
+	purego.RegisterFunc(&finish, header.invoke)
+	panel := cls("NSOpenPanel").Send(sel("openPanel"))
+	panel.Send(sel("setCanChooseFiles:"), true)
+	panel.Send(sel("setCanChooseDirectories:"), false)
+	panel.Send(sel("setAllowsMultipleSelection:"), objc.Send[bool](params, sel("allowsMultipleSelection")))
+	var urls objc.ID
+	if panel.Send(sel("runModal")) == 1 {
+		urls = panel.Send(sel("URLs"))
+	}
+	finish(block, urls)
 }

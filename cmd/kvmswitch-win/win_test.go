@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"image"
 	"image/color"
 	"image/png"
@@ -145,9 +146,15 @@ func TestClipboardCommitSequence(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, c := range []xfer.Clip{{Kind: xfer.KindText, Data: []byte("test")}, {Kind: xfer.KindImage, Data: buf.Bytes()}, {Kind: xfer.KindFiles, Paths: []string{path}}} {
-		seq, err := writeClipboard(c.Kind, c.Data, c.Paths)
+		seq, err := writeClipboard(c.Kind, c.Data, c.Paths, nil)
 		if got := clipboardSeq(); err != nil || seq == 0 || got != seq {
 			t.Fatalf("%s: write=%d published=%d err=%v", c.Kind, seq, got, err)
 		}
 	}
+	stale := uint64(clipboardSeq() - 1)
+	before := clipboardSeq()
+	if _, err := writeClipboard(xfer.KindFiles, nil, []string{path}, &stale); !errors.Is(err, core.ErrClipChanged) || clipboardSeq() != before {
+		t.Fatalf("stale transfer modified clipboard: %v", err)
+	}
+
 }

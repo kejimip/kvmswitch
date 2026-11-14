@@ -14,6 +14,7 @@
     <button data-tab="display"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="14" rx="3"/><path d="M12 18v3m-5 0h10"/></svg><span class="nav-name">显示器</span></button>
     <button data-tab="input"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="13" rx="3"/><path d="M6 10h1m3 0h1m3 0h1m3 0h.1M7 15h10"/></svg><span class="nav-name">键盘与鼠标</span></button>
     <button data-tab="clip"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="16" rx="3"/><rect x="9" y="2" width="6" height="5" rx="2"/></svg><span class="nav-name">剪贴板</span></button>
+    <button data-tab="files"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h7l2 2h9v10H3zM7 5h6l2 2h4"/><path d="M8 14h8m-3-3 3 3-3 3"/></svg><span class="nav-name">文件传输</span></button>
     <button data-tab="pair"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M9 15l6-6m-4-2 2-2a5 5 0 0 1 7 7l-2 2M6 10l-2 2a5 5 0 0 0 7 7l2-2"/></svg><span class="nav-name">连接</span><span class="dot" id="pairDot"></span></button>
     <button data-tab="system"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="4"/><path d="m7 9 3 3-3 3m6 0h4"/></svg><span class="nav-name">系统与日志</span></button>
     <div class="foot">版本 <span id="ver">-</span></div>
@@ -47,12 +48,17 @@
           </div>
         </div>
       </div>
+      <div class="card file-card">
+        <div class="row"><div class="lbl"><b>文件传输</b><span id="ftPeer">不必切换设备，直接发送原文件。</span></div><button class="link" data-goto="files">传输设置</button></div>
+        <div id="ftDrop"><b>将文件拖到这里</b><span>支持多选 · 按原格式发送</span><button class="btn" id="ftPick">选择文件</button><input id="ftInput" type="file" multiple hidden></div>
+        <div id="ftQueue"></div><div class="row"><span id="ftSum">未选择文件</span><button class="btn" id="ftSend" disabled>发送文件</button></div>
+        <div id="ftNow"></div></div>
       <div class="card checks">
         <h2>运行状态</h2>
         <div class="row"><div class="lbl"><b>两台设备的连接</b><span id="ckConnTxt"></span></div><div class="ctl"><button class="link" data-goto="pair" id="ckConnLink">去连接</button><span class="st" id="ckConn"></span></div></div>
         <div class="row"><div class="lbl"><b>Mac 键鼠控制权限</b><span>显示 Mac 是否获准接收并执行另一台设备发来的键鼠事件</span></div><div class="ctl"><span class="st" id="ckAx"></span></div></div>
         <div class="row"><div class="lbl"><b>显示器随切换</b><span id="ckMonTxt"></span></div><div class="ctl"><button class="link" data-goto="display">设置</button><span class="st" id="ckMon"></span></div></div>
-        <div class="row"><div class="lbl"><b>剪贴板同步</b><span>切换只通知对端，按粘贴快捷键时才传输</span></div><div class="ctl"><button class="link" data-goto="clip">设置</button><span class="st" id="ckClip"></span></div></div>
+        <div class="row"><div class="lbl"><b>剪贴板同步</b><span>切换时开始同步，接收完成后直接粘贴</span></div><div class="ctl"><button class="link" data-goto="clip">设置</button><span class="st" id="ckClip"></span></div></div>
       </div>
       <div class="card">
         <div class="row keys"><div class="lbl"><b>屏幕切走后回不来？</b><span>在哪台设备的键盘上按紧急热键，键鼠和显示器就回到哪台设备</span></div><div class="ctl"><kbd id="emHint">Ctrl+Alt+Shift+F12</kbd></div></div>
@@ -113,7 +119,7 @@
     <!-- 剪贴板 -->
     <section id="clip">
       <h1>剪贴板</h1>
-      <p class="sub">在一台设备上复制，切换后直接粘贴。按粘贴快捷键开始接收；焦点未变时自动粘贴。传输中继续操作或无法确认焦点时，请等就绪后再粘贴。右键菜单不触发首次接收。</p>
+      <p class="sub">切换设备时自动接收新复制的内容。就绪后可用快捷键或右键菜单粘贴；接收中先按了粘贴快捷键，传完且目标未变时会补上这一次粘贴。</p>
       <div class="card">
         <div class="row"><div class="lbl"><b>同步剪贴板</b><span>文本、图片、文件和文件夹</span></div><div class="ctl"><label class="sw"><input type="checkbox" data-k="sync_clipboard"><span></span></label></div></div>
         <div class="row"><div class="lbl"><b>接收进度</b><span id="transferStatus">空闲</span></div><progress id="transferBar" max="1" value="0"></progress><button class="btn" id="cancelTransfer" disabled>取消</button><button class="btn" id="retryTransfer" disabled>重试</button></div>
@@ -123,6 +129,11 @@
       </div>
     </section>
 
+    <section id="files"><h1>文件传输</h1><p class="sub">这里只管理本机的接收设置。文件不会写入剪贴板，也不会自动打开。</p>
+      <div class="card"><div class="row"><div class="lbl"><b>本机接收目录</b><span id="ftDir"></span></div><div class="ctl"><button class="btn" id="ftChange">更改目录</button><button class="btn" id="ftOpen">打开目录</button></div></div>
+      <div class="row"><div class="lbl"><b>单批接收上限</b><span>超限时拒绝整批，不弹确认框。</span></div><div class="ctl"><input type="number" aria-label="单批接收上限" min="1" max="1048576" step="1" data-k="file_limit_mib"><span>MiB</span></div></div>
+      <div class="row"><div class="lbl"><b>暂停接收新任务</b><span>默认免确认，仅接受已配对设备。</span></div><label class="sw"><input type="checkbox" aria-label="暂停接收" data-k="file_paused"><span></span></label></div></div>
+      <div class="card"><h2>本次运行的传输记录</h2><div id="ftHistory"></div></div></section>
     <!-- 连接 -->
     <section id="pair">
       <h1>连接</h1>
@@ -200,7 +211,7 @@ function toast(msg, isErr) {
 }
 
 // ---------- 导航 ----------
-const tabs = ['home', 'display', 'input', 'clip', 'pair', 'system'];
+const tabs = ['home', 'display', 'input', 'clip', 'files', 'pair', 'system'];
 function show(tab) {
   if (!tabs.includes(tab)) tab = 'home';
   $$('section').forEach(s => s.classList.toggle('on', s.id === tab));
@@ -359,6 +370,7 @@ function render(s) {
   $('#installUpdate').textContent = u.New ? '更新到 '+u.Latest : '重装当前版本';
   $('[data-tab="system"] .nav-name').textContent = u.New ? '系统与日志 · 有更新' : '系统与日志';
   state = s;
+  drawTransfers(s);
   const t=s.transfer,m=s.media||{};
   $('#testMedia').disabled=!!m.Listening;
   $('#mediaStatus').textContent=(m.Listening?'监听中 · ':'')+(m.Key?m.Key+' · '+(m.Sent?'已发送':'未发送')+' · '+(m.Received?'对端已收到':'未收到回执'):'尚未检测到媒体键');
@@ -537,6 +549,7 @@ async function loadLog() {
 }
 $('#logRefresh').onclick = loadLog;
 
+/* embedded-files-js */
 let startAt = startTab;
 try { if (!startAt) startAt = sessionStorage.getItem('kvm_tab'); } catch (e) {}
 show(startAt || 'home');

@@ -19,6 +19,7 @@ import (
 	"sync/atomic"
 
 	"kvmswitch/internal/core"
+	"kvmswitch/internal/filedrop"
 	"kvmswitch/internal/update"
 )
 
@@ -29,7 +30,10 @@ var markup []byte
 var stylesheet []byte
 
 // Inline the local stylesheet to preserve the single-document CSP and offline UI.
-var page = bytes.Replace(markup, []byte("/* embedded-panel-styles */"), stylesheet, 1)
+//go:embed files.js
+var filesJS []byte
+
+var page = bytes.Replace(bytes.Replace(markup, []byte("/* embedded-panel-styles */"), stylesheet, 1), []byte("/* embedded-files-js */"), filesJS, 1)
 
 // Host 是面板需要的、与操作系统相关的能力。
 type Host interface {
@@ -89,16 +93,17 @@ func (s *Server) URL(tab string) string {
 }
 
 type stateJSON struct {
-	Update    update.State     `json:"update"`
-	Media     core.MediaResult `json:"media"`
-	Transfer  *core.Transfer   `json:"transfer,omitempty"`
-	Version   string           `json:"version"`
-	SelfOS    string           `json:"self_os"`
-	SelfName  string           `json:"self_name"`
-	Dialer    bool             `json:"dialer"` // 本机是主动发起连接的一端（可手动填写对方地址）
-	Autostart bool             `json:"autostart"`
-	State     core.State       `json:"state"`
-	Config    *core.Config     `json:"config"`
+	Files     []filedrop.Record `json:"files"`
+	Update    update.State      `json:"update"`
+	Media     core.MediaResult  `json:"media"`
+	Transfer  *core.Transfer    `json:"transfer,omitempty"`
+	Version   string            `json:"version"`
+	SelfOS    string            `json:"self_os"`
+	SelfName  string            `json:"self_name"`
+	Dialer    bool              `json:"dialer"` // 本机是主动发起连接的一端（可手动填写对方地址）
+	Autostart bool              `json:"autostart"`
+	State     core.State        `json:"state"`
+	Config    *core.Config      `json:"config"`
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -138,6 +143,7 @@ func Start(c *core.Core, h Host, logs *LogRing, dialer bool) (*Server, error) {
 			fn(w, r)
 		})
 	}
+	manualRoutes(c, h, post)
 	ok := map[string]bool{"ok": true}
 	u := update.Start(core.Version, c.P.OS(), h.Quit)
 	post("/api/update/check", func(w http.ResponseWriter, r *http.Request) {
@@ -158,7 +164,7 @@ func Start(c *core.Core, h Host, logs *LogRing, dialer bool) (*Server, error) {
 
 	api.HandleFunc("/api/state", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, stateJSON{
-			Update: u.State(), Media: c.MediaState(), Transfer: c.TransferState(), Version: core.Version, SelfOS: c.P.OS(), SelfName: c.P.Hostname(), Dialer: dialer,
+			Files: c.Files.Snapshot(), Update: u.State(), Media: c.MediaState(), Transfer: c.TransferState(), Version: core.Version, SelfOS: c.P.OS(), SelfName: c.P.Hostname(), Dialer: dialer,
 			Autostart: h.Autostart(), State: c.State(), Config: c.Config(),
 		})
 	})

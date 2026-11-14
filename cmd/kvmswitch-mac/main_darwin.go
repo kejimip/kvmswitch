@@ -106,8 +106,8 @@ func (p *macPlatform) SetMonitorInput(v uint16, cfg *core.Config) error {
 
 func (p *macPlatform) ClipChange() uint64          { return uint64(pbChangeCount()) }
 func (p *macPlatform) ReadClip() (xfer.Clip, bool) { return readPasteboard() }
-func (p *macPlatform) WriteClip(kind string, data []byte, paths []string) (uint64, error) {
-	n, err := writePasteboard(kind, data, paths)
+func (p *macPlatform) WriteClip(kind string, data []byte, paths []string, expected uint64) (uint64, error) {
+	n, err := writePasteboard(kind, data, paths, &expected)
 	return uint64(n), err
 }
 
@@ -228,7 +228,7 @@ func (p *macPlatform) MonitorInfo() string {
 }
 
 func (p *macPlatform) CopyText(s string) error {
-	_, err := writePasteboard(xfer.KindText, []byte(s), nil)
+	_, err := writePasteboard(xfer.KindText, []byte(s), nil, nil)
 	return err
 }
 
@@ -336,6 +336,7 @@ func main() {
 	if err != nil {
 		fatal("读取配置失败：" + err.Error() + "\n\n配置文件：" + cfgPath())
 	}
+	defer c.Files.Forget()
 	p.inj.fetch = c.RequestPaste
 	p.core = c
 	p.tap = newTap(c, p.inj)

@@ -54,7 +54,7 @@ type Clip struct {
 
 // Session 封装一条数据通道连接，负责双向收发。
 type Session struct {
-	Wanted   func(id uint64) bool // nil for standalone transfers; paired sessions require a current paste request
+	Wanted   func(id uint64) bool // nil for standalone transfers; paired sessions require a current transfer ticket
 	C        *proto.Conn
 	Dir      string                                         // 接收文件的缓存根目录
 	MaxAuto  func() int64                                   // 超过该字节数的文件需要对端确认；<=0 表示不限

@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-const Version = "1.3.10"
+const Version = "1.3.11"
 
 // Config 是一台设备上的全部配置。除 PairingKey、Port、PeerHost 外，其余为“共享设置”，
 // 在任意一端修改后会自动同步到另一端。
@@ -41,11 +41,14 @@ func MonitorIndex(ids []string, bound string) (int, error) {
 }
 
 type Config struct {
-	MonitorID  string `json:"monitor_id"` // Local hardware path; never synchronized.
-	Schema     int    `json:"schema"`     // 配置文件格式版本
-	PairingKey string `json:"pairing_key"`
-	Port       int    `json:"port"`
-	PeerHost   string `json:"peer_host,omitempty"` // 可选：手动指定对方 IP（仅主动发起连接的一端使用）
+	FileDir      string `json:"file_dir"`
+	FileLimitMiB int64  `json:"file_limit_mib"`
+	FilePaused   bool   `json:"file_paused"`
+	MonitorID    string `json:"monitor_id"` // Local hardware path; never synchronized.
+	Schema       int    `json:"schema"`     // 配置文件格式版本
+	PairingKey   string `json:"pairing_key"`
+	Port         int    `json:"port"`
+	PeerHost     string `json:"peer_host,omitempty"` // 可选：手动指定对方 IP（仅主动发起连接的一端使用）
 
 	Hotkey          string  `json:"hotkey"`
 	EmergencyHotkey string  `json:"emergency_hotkey"`
@@ -101,7 +104,9 @@ func (c *Config) WithShared(s Shared) *Config {
 }
 
 func DefaultConfig() *Config {
+	home, _ := os.UserHomeDir()
 	return &Config{
+		FileDir: filepath.Join(home, "Downloads", "KVMSwitch"), FileLimitMiB: 10240,
 		Schema:          schemaVersion,
 		Port:            47812,
 		Hotkey:          "Ctrl+F12",
@@ -369,6 +374,9 @@ func Validate(cfg *Config) (p Parsed, err error) {
 	}
 	if cfg.MouseScale < 0.1 || cfg.MouseScale > 10 || cfg.ScrollScale < 0.1 || cfg.ScrollScale > 10 {
 		return p, fmt.Errorf("速度倍率需在 0.1 到 10 之间")
+	}
+	if !filepath.IsAbs(cfg.FileDir) || cfg.FileLimitMiB < 1 || cfg.FileLimitMiB > 1<<20 {
+		return p, fmt.Errorf("接收目录须为绝对路径，单批上限为 1–1048576 MiB")
 	}
 	if cfg.MaxAutoFileMB < 0 {
 		return p, fmt.Errorf("文件大小上限不能为负数")

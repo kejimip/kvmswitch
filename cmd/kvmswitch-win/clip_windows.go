@@ -16,6 +16,7 @@ import (
 	"golang.org/x/sys/windows"
 
 	"kvmswitch/internal/clipimage"
+	"kvmswitch/internal/core"
 	"kvmswitch/internal/xfer"
 )
 
@@ -213,7 +214,7 @@ func setData(f uintptr, data []byte) error {
 }
 
 // writeClipboard 把收到的内容写入本机剪贴板，返回写入后的序列号。
-func writeClipboard(kind string, data []byte, paths []string) (seq uint32, err error) {
+func writeClipboard(kind string, data []byte, paths []string, expected *uint64) (seq uint32, err error) {
 	var filePNG, fileDIB []byte
 	if kind == xfer.KindFiles {
 		filePNG = clipimage.FilePreview(paths)
@@ -244,6 +245,9 @@ func writeClipboard(kind string, data []byte, paths []string) (seq uint32, err e
 			seq = 0
 		}
 	}()
+	if expected != nil && uint64(clipboardSeq()) != *expected {
+		return 0, core.ErrClipChanged
+	}
 	if r, _, _ := pEmptyClipboard.Call(); r == 0 {
 		return 0, errors.New("无法清空剪贴板")
 	}
